@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits containing secrets or known credential files.
+set -e
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+ERRORS=0
+
+# ── 1. Block known credential files ──────────────────────────────────────────
+FORBIDDEN_FILES=(".env" "credentials.json" "gmail_token.json")
+
+for f in "${FORBIDDEN_FILES[@]}"; do
+    if git diff --cached --name-only | grep -qFx "$f"; then
+        echo -e "${RED}[SECRET BLOCK]${NC} Refusing to commit '$f' — this file contains secrets."
+        ERRORS=$((ERRORS + 1))
+    fi
+done
+
+# ── 2. Scan staged content for secret patterns ────────────────────────────────
+# Get staged file contents (new/modified only, not deleted)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -n "$STAGED" ]; then
+    while IFS= read -r file; do
+        # Skip binary files
+        if git show ":$file" | file - | grep -q "binary"; then
+            continue
+        fi
+
+        # Skip template/example files — they contain placeholder values, not real secrets
+        if [[ "$file" == *.example || "$file" == *.template ]]; then
+            continue
+        fi
+
+        content=$(git show ":$file" 2>/dev/null)
+
+        # Telegram bot token: digits:35chars (e.g. 123456789:ABCdef...)
+        if echo "$content" | grep -qE '[0-9]{8,10}:[A-Za-z0-9_-]{35}'; then
+            echo -e "${RED}[SECRET BLOCK]${NC} Possible Telegram bot token in: $file"
+            ERRORS=$((ERRORS + 1))
+        fi
+
+        # OpenAI API key: sk- prefix
+        if echo "$content" | grep -qE 'sk-[A-Za-z0-9]{20,}'; then
+            echo -e "${RED}[SECRET BLOCK]${NC} Possible OpenAI API key in: $file"
+            ERRORS=$((ERRORS + 1))
+        fi
+
+        # Generic: variable assignment with a long token-like value
+        if echo "$content" | grep -qiE '(api_key|secret|token|password)\s*[=:]\s*["\x27]?[A-Za-z0-9/_\-]{20,}'; then
+            echo -e "${YELLOW}[SECRET WARN]${NC} Possible secret value in: $file (check manually)"
+            ERRORS=$((ERRORS + 1))
+        fi
+
+    done <<< "$STAGED"
+fi
+
+# ── Result ────────────────────────────────────────────────────────────────────
+if [ $ERRORS -gt 0 ]; then
+    echo ""
+    echo -e "${RED}Commit blocked: $ERRORS secret(s) detected.${NC}"
+    echo "To skip this check (use with care): git commit --no-verify"
+    exit 1
+fi
+
+exit 0
