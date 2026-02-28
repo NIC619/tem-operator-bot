@@ -1,0 +1,9 @@
+python-telegram-bot==21.*
+openai>=1.0
+google-api-python-client>=2.0
+google-auth-oauthlib>=1.0
+APScheduler>=3.10
+PyYAML>=6.0
+python-dotenv>=1.0
+pytz
+requests
