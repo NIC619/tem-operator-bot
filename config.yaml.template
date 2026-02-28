@@ -10,7 +10,7 @@ gmail:
   subject_prefix: "TEM 專欄投稿："         # Only process emails whose subject starts with this
 
 workflow:
-  followup_interval_days: 7    # Days between check-in messages to reviewers
+  followup_interval_days: 14   # Days between check-in messages to reviewers (supports decimals, e.g. 0.01 ≈ 15 min for testing)
   publish_time: "09:30"        # HH:MM local time for scheduled publish
   publish_timezone: "Asia/Taipei"
 
