@@ -17,3 +17,7 @@ venv/
 
 # OS
 .DS_Store
+
+config.yaml
+reviewers.md
+CONTEXT.md
