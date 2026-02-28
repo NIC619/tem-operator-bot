@@ -105,7 +105,8 @@ _USER_PROMPT = """\
 """
 
 
-async def pick_reviewers(email_data: dict, config: dict = None) -> dict:
+async def pick_reviewers(email_data: dict, config: dict = None,
+                         article_content: str = "") -> dict:
     """
     Call OpenAI to pick 2 reviewers for a new submission.
     Returns dict with keys: reviewer1, reviewer2, category, reason_zh
@@ -124,7 +125,7 @@ async def pick_reviewers(email_data: dict, config: dict = None) -> dict:
         author_name=email_data.get("author_name", ""),
         author_email=email_data.get("author_email", ""),
         email_body=(email_data.get("email_body", "") or "")[:3000],
-        article_content="",
+        article_content=(article_content or "")[:8000],
         history_text=history_text,
         workload_summary=workload_summary,
     )

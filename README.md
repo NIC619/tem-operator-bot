@@ -10,20 +10,29 @@ A Telegram bot that automates the editorial review workflow for the [Taipei Ethe
 New submission email
         │
         ▼
-Bot posts in Telegram group
-LLM picks 1–2 reviewers → inline buttons [✅ Yes] [❌ Can't]
+Bot DMs operator: "paste the draft content or /skip"
         │
-        ▼  (both confirm)
+        ├── /content <sub_id> <text>   (operator pastes draft)
+        ├── /skip <sub_id>             (skip, use title only)
+        └── 24h timeout                (auto-proceed)
+        │
+        ▼
+LLM picks 1–2 reviewers (using content if provided)
+Bot posts in Telegram group → inline buttons [✅ Yes] [❌ Can't]
+        │
+        ▼  (all reviewers confirm)
 Status → Under Review
 Author notified by email
 Follow-up messages every 14 days
         │
-        ▼  (both mark done)
+        ▼  (all reviewers mark done)
 Publish date computed (next weekday)
 Author notified by email → ACCEPTED
 
 At any point: /reject → 2 seconds → operator confirms → REJECTED
 ```
+
+> If `operator_user_id` is not set in `config.yaml`, the content-request step is skipped and the bot assigns reviewers directly from the email subject and body.
 
 ---
 
@@ -126,7 +135,9 @@ pm2 startup
 | `/done <keyword>` | Reviewer | Marks your review as done (e.g. `/done fusaka`) |
 | `/reject <keyword> <reason>` | Anyone | Proposes rejecting a submission |
 | `/second <keyword>` | Anyone | Seconds a rejection proposal (2 needed) |
-| `/override <sub_id> @user1 @user2` | Operator | Manually assigns reviewers |
+| `/override <sub_id> @user1 [@user2]` | Operator | Manually assigns reviewers |
+| `/content <sub_id> <text>` | Operator | Provides article draft text for reviewer assignment |
+| `/skip <sub_id>` | Operator | Skips content request; assigns based on title alone |
 
 Inline buttons appear automatically — reviewers tap to accept/decline and to mark done.
 
@@ -170,7 +181,7 @@ The bot extracts author name, email, article title, and Medium URL (if present) 
 
 ## Database
 
-SQLite (`tem_bot.db`), 5 tables:
+SQLite (`tem_bot.db`), 6 tables:
 
 | Table | Purpose |
 |-------|---------|
@@ -180,6 +191,7 @@ SQLite (`tem_bot.db`), 5 tables:
 | `assignment_history` | 90-day history for LLM workload balancing |
 | `rejections` | Rejection proposals + seconds |
 | `bot_state` | Persistent key-value store (e.g. last Gmail poll timestamp) |
+| `content_requests` | Pending operator content requests with 24h deadline |
 
 ---
 
@@ -189,4 +201,5 @@ SQLite (`tem_bot.db`), 5 tables:
 - Inline buttons are reviewer-specific — only the tagged reviewer can click their own button.
 - Gmail sends are run in a thread (`asyncio.to_thread`) so they don't block Telegram responses.
 - The Gmail poll timestamp is persisted to the DB so emails are never missed across restarts.
+- The operator must have started a private chat with the bot before content-request DMs will work. If not, the bot falls back to a group-chat notice.
 - Occasional `ConnectTimeout` errors to Telegram are transient network issues and self-recover — logged as warnings, not errors.

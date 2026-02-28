@@ -58,9 +58,19 @@ def start_scheduler(bot) -> None:
         replace_existing=True,
     )
 
+    scheduler.add_job(
+        _check_content_requests,
+        trigger="interval",
+        minutes=5,
+        args=[bot],
+        id="content_request_checker",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
-        "Scheduler started. Gmail poll every %ds, follow-up check every 1h.",
+        "Scheduler started. Gmail poll every %ds, follow-up check every 1h, "
+        "content request check every 5m.",
         poll_interval,
     )
 
@@ -98,6 +108,25 @@ async def _poll_gmail(bot) -> None:
                 )
             except Exception as notify_err:
                 logger.error("Failed to notify operator: %s", notify_err)
+
+
+async def _check_content_requests(bot) -> None:
+    config = cfg.load()
+    now = datetime.now()
+
+    try:
+        expired = db.get_expired_content_requests(now)
+        for row in expired:
+            try:
+                await state.handle_content_timeout(row["submission_id"], bot, config)
+            except Exception as e:
+                logger.error(
+                    "Error handling content request timeout for submission #%s: %s",
+                    row["submission_id"],
+                    e,
+                )
+    except Exception as e:
+        logger.error("Content request checker failed: %s", e)
 
 
 async def _check_followups(bot) -> None:
