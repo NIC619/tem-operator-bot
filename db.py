@@ -87,6 +87,13 @@ def init_db():
                 proposed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (submission_id) REFERENCES submissions(id)
             );
+
+            CREATE TABLE IF NOT EXISTS content_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id INTEGER UNIQUE NOT NULL REFERENCES submissions(id),
+                deadline TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
 
 
@@ -362,6 +369,41 @@ def set_rejection_proposal_message_id(rejection_id: int, message_id: int):
             "UPDATE rejections SET tg_proposal_message_id = ? WHERE id = ?",
             (message_id, rejection_id)
         )
+
+
+# ── Content Requests ─────────────────────────────────────────────────────────
+
+def insert_content_request(submission_id: int, deadline: datetime):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO content_requests (submission_id, deadline) VALUES (?, ?)",
+            (submission_id, deadline.isoformat())
+        )
+
+
+def get_expired_content_requests(now: datetime):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM content_requests WHERE deadline <= ?",
+            (now.isoformat(),)
+        ).fetchall()
+
+
+def delete_content_request(submission_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM content_requests WHERE submission_id = ?",
+            (submission_id,)
+        )
+
+
+def has_content_request(submission_id: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM content_requests WHERE submission_id = ?",
+            (submission_id,)
+        ).fetchone()
+        return row is not None
 
 
 # ── Bot State (persistent key-value) ─────────────────────────────────────────

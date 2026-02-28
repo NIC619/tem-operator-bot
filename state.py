@@ -35,11 +35,8 @@ def compute_publish_date(timezone_str: str = "Asia/Taipei",
 async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
     """
     Called by the Gmail poller when a new submission email arrives.
-    1. Insert submission into DB (status=pending_assignment)
-    2. Call LLM to pick 2 reviewers
-    3. Insert assignments
-    4. Post Telegram messages
-    5. Update status to 'assigning'
+    If operator_user_id is set: insert as pending_content, DM operator for draft.
+    Otherwise: proceed directly to LLM assignment.
     """
     # Avoid duplicate processing
     existing = db.get_submission_by_gmail_id(email_data["gmail_message_id"])
@@ -60,9 +57,62 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
     )
     logger.info("Inserted submission #%d: %s", sub_id, email_data["title"])
 
-    # LLM assignment
+    operator_user_id = config["telegram"].get("operator_user_id")
+    if not operator_user_id:
+        logger.warning(
+            "operator_user_id not set — skipping content request, assigning directly."
+        )
+        await _proceed_with_assignment(sub_id, email_data, "", bot, config)
+        return
+
+    # Set status to pending_content and DM the operator
+    db.update_submission_status(sub_id, "pending_content")
+    deadline = datetime.now() + timedelta(hours=24)
+    db.insert_content_request(sub_id, deadline)
+
+    tz = pytz.timezone(config["workflow"].get("publish_timezone", "Asia/Taipei"))
+    deadline_local = deadline.astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
+
+    dm_text = (
+        f"📝 New submission #{sub_id}: 《{email_data['title']}》\n"
+        f"Author: {email_data.get('author_name', '')} ({email_data['author_email']})\n\n"
+        f"Please paste the article draft content so I can assign the best reviewers:\n"
+        f"/content {sub_id} <paste full text here>\n\n"
+        f"Or type /skip {sub_id} to assign based on title alone.\n"
+        f"Deadline: {deadline_local} (24h)"
+    )
     try:
-        assignment = await llm.pick_reviewers(email_data)
+        await bot.send_message(chat_id=operator_user_id, text=dm_text)
+    except Exception as e:
+        logger.error(
+            "Failed to DM operator for submission #%d: %s — falling back to group notice.",
+            sub_id, e,
+        )
+        group_chat_id = config["telegram"]["group_chat_id"]
+        try:
+            await bot.send_message(
+                chat_id=group_chat_id,
+                text=(
+                    f"⚠️ Operator: please start a private chat with this bot and send:\n"
+                    f"`/content {sub_id} <article text>`\n"
+                    f"or `/skip {sub_id}` to assign based on title alone.\n"
+                    f"(Submission #{sub_id}: 《{email_data['title']}》)"
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception as group_err:
+            logger.error("Failed to send group fallback notice: %s", group_err)
+
+
+async def _proceed_with_assignment(sub_id: int, email_data: dict,
+                                    article_content: str, bot, config: dict) -> None:
+    """
+    Call LLM, post group announcement, and send reviewer buttons.
+    Called after content is received, skipped, or timed out.
+    """
+    try:
+        assignment = await llm.pick_reviewers(email_data, config=config,
+                                               article_content=article_content)
     except Exception as e:
         logger.error("LLM reviewer assignment failed: %s", e)
         group_chat_id = config["telegram"]["group_chat_id"]
@@ -116,6 +166,56 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
         reply_markup=keyboard,
     )
     db.set_tg_status_message_id(sub_id, msg.message_id)
+
+
+async def handle_content_provided(sub_id: int, article_content: str,
+                                   bot, config: dict) -> None:
+    """
+    Called when the operator provides content (/content) or skips (/skip).
+    Proceeds to LLM assignment.
+    """
+    sub = db.get_submission_by_id(sub_id)
+    if not sub or sub["status"] != "pending_content":
+        return
+
+    db.delete_content_request(sub_id)
+
+    email_data = {
+        "gmail_message_id": sub["gmail_message_id"],
+        "gmail_thread_id": sub["gmail_thread_id"],
+        "title": sub["title"],
+        "author_name": sub["author_name"],
+        "author_email": sub["author_email"],
+        "medium_url": sub["medium_url"],
+        "email_subject": sub["email_subject"],
+        "email_body": sub["email_body"],
+    }
+    await _proceed_with_assignment(sub_id, email_data, article_content, bot, config)
+
+
+async def handle_content_timeout(sub_id: int, bot, config: dict) -> None:
+    """
+    Called by the scheduler when a content request deadline expires.
+    Proceeds to LLM assignment without content.
+    """
+    sub = db.get_submission_by_id(sub_id)
+    if not sub or sub["status"] != "pending_content":
+        return  # Already handled by operator
+
+    logger.info("Content request timed out for submission #%d, proceeding without content.", sub_id)
+    db.delete_content_request(sub_id)
+
+    email_data = {
+        "gmail_message_id": sub["gmail_message_id"],
+        "gmail_thread_id": sub["gmail_thread_id"],
+        "title": sub["title"],
+        "author_name": sub["author_name"],
+        "author_email": sub["author_email"],
+        "medium_url": sub["medium_url"],
+        "email_subject": sub["email_subject"],
+        "email_body": sub["email_body"],
+    }
+    await _proceed_with_assignment(sub_id, email_data, "", bot, config)
 
 
 # ── Reviewer Accept / Decline ─────────────────────────────────────────────────
