@@ -217,7 +217,7 @@ async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
                 f"and no replacement could be found automatically.\n\n"
                 f"Please assign a replacement manually:\n"
                 f"`{override_example}`\n\n"
-                f"Replace `@new_reviewer` with the username of whoever will review."
+                f"Replace `@new_reviewer` with the actual username. The number `{sub_id}` is the submission ID."
             ),
             parse_mode="Markdown",
         )
