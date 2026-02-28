@@ -1,0 +1,17 @@
+telegram:
+  group_chat_id: -XXXXXXXXXX   # Fill in after running /getid in the group
+  operator_user_id: null       # Fill in: your Telegram user ID (from /getid)
+  poll_interval_seconds:  3    # How often to check Telegram for new messages (seconds)
+
+gmail:
+  poll_interval_seconds: 300   # How often to check for new emails (5 min)
+  # Filter options (set to null to disable):
+  submission_label: "XXX/XXX"   # Only process emails with this Gmail label
+  subject_prefix: "TEM 專欄投稿："         # Only process emails whose subject starts with this
+
+workflow:
+  followup_interval_days: 7    # Days between check-in messages to reviewers
+  publish_time: "09:30"        # HH:MM local time for scheduled publish
+  publish_timezone: "Asia/Taipei"
+
+reviewers_file: "./reviewers.md"   # Local copy of the reviewer list

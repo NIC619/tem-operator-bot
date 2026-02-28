@@ -1,0 +1,23 @@
+# TEM Reviewer List
+
+Fill in your actual reviewer categories and usernames here.
+
+## Zero-Knowledge Proofs (ZKP)
+ZK proof systems, SNARKs, STARKs, zkEVM, privacy-preserving computation.
+Reviewers: @username1, @username2
+
+## Layer 2 & Rollups
+Optimistic rollups, ZK rollups, state channels, sidechains.
+Reviewers: @username2, @username3
+
+## DeFi & Protocols
+AMMs, lending protocols, stablecoins, MEV, liquidity.
+Reviewers: @username1, @username3
+
+## Developer Tools & Infrastructure
+Foundry, Hardhat, EVM internals, Solidity patterns, auditing.
+Reviewers: @username1, @username2, @username3
+
+## Ethereum Core & Consensus
+EIP discussions, validator operations, staking, PoS.
+Reviewers: @username2, @username3
