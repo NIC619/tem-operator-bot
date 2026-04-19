@@ -255,8 +255,54 @@ async def cmd_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    total_len = db.append_content_request_text(sub_id, article_content)
     await update.message.reply_text(
-        f"✅ Content received for 《{sub['title']}》. Assigning reviewers now…"
+        f"📝 Appended {len(article_content)} chars to 《{sub['title']}》 "
+        f"(total: {total_len}).\n\n"
+        f"Send more with /content {sub_id} <text> or finalize with "
+        f"/content_done {sub_id}."
+    )
+
+
+# ── /content_done <sub_id> ───────────────────────────────────────────────────
+
+async def cmd_content_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /content_done.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /content_done <sub_id>")
+        return
+
+    try:
+        sub_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("sub_id must be a number.")
+        return
+
+    sub = db.get_submission_by_id(sub_id)
+    if not sub or sub["status"] != "pending_content":
+        await update.message.reply_text(
+            f"No pending content request for submission #{sub_id}."
+        )
+        return
+
+    article_content = db.get_content_request_text(sub_id)
+    if not article_content:
+        await update.message.reply_text(
+            f"No content buffered for #{sub_id}. Use /content first, "
+            f"or /skip {sub_id} to proceed without content."
+        )
+        return
+
+    await update.message.reply_text(
+        f"✅ Finalizing content for 《{sub['title']}》 "
+        f"({len(article_content)} chars). Assigning reviewers…"
     )
     await state.handle_content_provided(sub_id, article_content, context.bot, config)
 

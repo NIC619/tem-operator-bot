@@ -21,6 +21,7 @@ from telegram_handlers import (
     cmd_second,
     cmd_override,
     cmd_content,
+    cmd_content_done,
     cmd_skip,
     cb_accept,
     cb_decline,
@@ -95,6 +96,7 @@ def main() -> None:
     app.add_handler(CommandHandler("second", cmd_second))
     app.add_handler(CommandHandler("override", cmd_override))
     app.add_handler(CommandHandler("content", cmd_content))
+    app.add_handler(CommandHandler("content_done", cmd_content_done))
     app.add_handler(CommandHandler("skip", cmd_skip))
 
     # Button callbacks
