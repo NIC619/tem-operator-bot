@@ -8,6 +8,7 @@ import os
 from openai import AsyncOpenAI
 
 import db
+import reviewers as reviewers_mod
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,8 @@ async def pick_reviewers(email_data: dict, config: dict = None,
 
     raw = response.choices[0].message.content.strip()
     result = _parse_json_response(raw)
+    _validate_reviewers_exist(result, reviewer_md,
+                              required_keys=("reviewer1",))
     logger.info("LLM picked reviewers: %s, %s (category: %s)",
                 result.get("reviewer1"), result.get("reviewer2"), result.get("category"))
     return result
@@ -196,8 +199,36 @@ async def pick_replacement_reviewer(email_data: dict, declined_username: str,
 
     raw = response.choices[0].message.content.strip()
     result = _parse_json_response(raw)
+    _validate_reviewers_exist(result, reviewer_md,
+                              required_keys=("reviewer1",))
     logger.info("LLM picked replacement reviewer: %s", result.get("reviewer1"))
     return result
+
+
+def _validate_reviewers_exist(result: dict, reviewer_md: str,
+                              required_keys=("reviewer1",)) -> None:
+    """
+    Ensure every non-empty username in result matches a reviewer in reviewers.md.
+    Lowercases both sides for comparison, and rewrites result values to the
+    canonical case from reviewers.md so downstream DB rows are consistent.
+    """
+    known = reviewers_mod.get_all_reviewer_usernames(reviewer_md)
+    known_lower = {u.lower(): u for u in known}
+
+    for key in ("reviewer1", "reviewer2"):
+        val = (result.get(key) or "").strip().lstrip("@")
+        if not val:
+            if key in required_keys:
+                raise ValueError(f"LLM returned empty {key}")
+            result[key] = ""
+            continue
+        canonical = known_lower.get(val.lower())
+        if not canonical:
+            raise ValueError(
+                f"LLM returned unknown reviewer '{val}' for {key}; "
+                f"not in reviewers.md"
+            )
+        result[key] = canonical
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
