@@ -3,7 +3,7 @@ db.py — SQLite schema and all database queries for the TEM review bot.
 """
 import sqlite3
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 
 DB_PATH = os.environ.get("DB_PATH", "./tem_bot.db")
@@ -92,9 +92,28 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 submission_id INTEGER UNIQUE NOT NULL REFERENCES submissions(id),
                 deadline TIMESTAMP NOT NULL,
+                article_content TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);
+            CREATE INDEX IF NOT EXISTS idx_assignments_submission ON assignments(submission_id);
+            CREATE INDEX IF NOT EXISTS idx_followups_pending
+                ON followups(scheduled_at) WHERE sent_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_content_requests_deadline
+                ON content_requests(deadline);
+            CREATE INDEX IF NOT EXISTS idx_assignment_history_assigned_at
+                ON assignment_history(assigned_at);
         """)
+
+        # Additive migration: add article_content to existing content_requests
+        # tables that predate multi-part content support.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(content_requests)")}
+        if "article_content" not in cols:
+            conn.execute(
+                "ALTER TABLE content_requests ADD COLUMN "
+                "article_content TEXT NOT NULL DEFAULT ''"
+            )
 
 
 # ── Submissions ──────────────────────────────────────────────────────────────
@@ -323,7 +342,11 @@ def mark_followup_sent(followup_id: int):
 
 def get_recent_assignment_history(days: int = 90):
     with get_conn() as conn:
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        # assigned_at is SQLite's CURRENT_TIMESTAMP (UTC, "YYYY-MM-DD HH:MM:SS").
+        # Match that format so string comparison works.
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         return conn.execute(
             """SELECT ah.*, s.title FROM assignment_history ah
                LEFT JOIN submissions s ON s.id = ah.submission_id
@@ -415,6 +438,34 @@ def has_content_request(submission_id: int) -> bool:
             (submission_id,)
         ).fetchone()
         return row is not None
+
+
+def append_content_request_text(submission_id: int, chunk: str) -> int:
+    """Append text to the buffered article content. Returns new total length."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT article_content FROM content_requests WHERE submission_id = ?",
+            (submission_id,)
+        ).fetchone()
+        if row is None:
+            return 0
+        current = row["article_content"] or ""
+        separator = "\n\n" if current else ""
+        new_content = current + separator + chunk
+        conn.execute(
+            "UPDATE content_requests SET article_content = ? WHERE submission_id = ?",
+            (new_content, submission_id)
+        )
+        return len(new_content)
+
+
+def get_content_request_text(submission_id: int) -> str:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT article_content FROM content_requests WHERE submission_id = ?",
+            (submission_id,)
+        ).fetchone()
+        return row["article_content"] if row else ""
 
 
 # ── Bot State (persistent key-value) ─────────────────────────────────────────
