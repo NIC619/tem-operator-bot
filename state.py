@@ -94,11 +94,10 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
                 chat_id=group_chat_id,
                 text=(
                     f"⚠️ Operator: please start a private chat with this bot and send:\n"
-                    f"`/content {sub_id} <article text>`\n"
-                    f"or `/skip {sub_id}` to assign based on title alone.\n"
+                    f"/content {sub_id} <article text>\n"
+                    f"or /skip {sub_id} to assign based on title alone.\n"
                     f"(Submission #{sub_id}: 《{email_data['title']}》)"
                 ),
-                parse_mode="Markdown",
             )
         except Exception as group_err:
             logger.error("Failed to send group fallback notice: %s", group_err)
@@ -316,10 +315,10 @@ async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
                 f"⚠️ @{username} is not available for 《{sub['title']}》 "
                 f"and no replacement could be found automatically.\n\n"
                 f"Please assign a replacement manually:\n"
-                f"`{override_example}`\n\n"
-                f"Replace `@new_reviewer` with the actual username. The number `{sub_id}` is the submission ID."
+                f"{override_example}\n\n"
+                f"Replace @new_reviewer with the actual username. "
+                f"The number {sub_id} is the submission ID."
             ),
-            parse_mode="Markdown",
         )
 
     return "Noted. Looking for a replacement."
@@ -442,10 +441,16 @@ async def _transition_to_accepted(sub_id: int, done_assignments: list,
     db.set_submission_accepted(sub_id, publish_date_str)
 
     group_chat_id = config["telegram"]["group_chat_id"]
+    n = len(done_assignments)
+    header = (
+        f"🎉 Both reviews complete for 《{sub['title']}》!"
+        if n >= 2
+        else f"🎉 Review complete for 《{sub['title']}》!"
+    )
     await bot.send_message(
         chat_id=group_chat_id,
         text=(
-            f"🎉 Both reviews complete for 《{sub['title']}》!\n\n"
+            f"{header}\n\n"
             f"Scheduled to publish: {publish_date_str} at 09:30 (Asia/Taipei)\n\n"
             f"Author has been notified."
         ),
@@ -487,7 +492,7 @@ async def handle_second(sub_id: int, username: str, bot, config: dict) -> str:
     if not rejection:
         return "No active rejection proposal for this submission."
 
-    if username == rejection["proposed_by"]:
+    if username.lower() == (rejection["proposed_by"] or "").lower():
         return "You can't second your own rejection proposal."
 
     rejection_id = rejection["id"]
