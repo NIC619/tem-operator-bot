@@ -91,12 +91,12 @@ class GmailClient:
             .execute()
         )
 
-        headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        subject = headers.get("Subject", "")
+        headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
+        subject = headers.get("subject", "")
         logger.info("Checking message %s: subject=%r", message_id, subject)
 
         # Skip replies — if In-Reply-To header is present it's part of a thread
-        if "In-Reply-To" in headers:
+        if "in-reply-to" in headers:
             logger.info("  → skipped (is a reply)")
             return None
 
@@ -113,10 +113,10 @@ class GmailClient:
             logger.info("  → skipped (thread has %d messages, already processed)", thread_len)
             return None
 
-        subject_raw = headers.get("Subject", "")
+        subject_raw = headers.get("subject", "")
         subject_clean = _REPLY_SUBJECT_RE.sub("", subject_raw).strip()
 
-        from_raw = headers.get("From", "")
+        from_raw = headers.get("from", "")
         author_name, author_email = _parse_from_header(from_raw)
 
         body = _extract_body(msg["payload"])
@@ -131,7 +131,7 @@ class GmailClient:
             "medium_url": medium_url,
             "email_subject": subject_raw,
             "email_body": body,
-            "message_id_header": headers.get("Message-ID", ""),
+            "message_id_header": headers.get("message-id", ""),
         }
 
     # ── Sending ───────────────────────────────────────────────────────────────
@@ -275,8 +275,8 @@ def _get_original_message_id_header(service, gmail_message_id: str) -> str | Non
                  metadataHeaders=["Message-ID"])
             .execute()
         )
-        headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        return headers.get("Message-ID")
+        headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
+        return headers.get("message-id")
     except Exception as e:
         logger.warning("Could not fetch Message-ID header: %s", e)
         return None
