@@ -81,6 +81,10 @@ async def _poll_gmail(bot) -> None:
     config = cfg.load()
     operator_user_id = config["telegram"].get("operator_user_id")
     last_checked_ts = _load_last_checked_ts()
+    # Capture poll start *before* the Gmail call so any message that arrives
+    # during processing is picked up on the next poll (at worst re-fetched,
+    # since gmail_message_id is UNIQUE in the DB).
+    poll_start_ts = time.time()
 
     try:
         gmail = GmailClient()
@@ -89,13 +93,21 @@ async def _poll_gmail(bot) -> None:
             subject_prefix=config["gmail"].get("subject_prefix"),
             submission_label=config["gmail"].get("submission_label"),
         )
-        _save_last_checked_ts(time.time())
 
+        all_ok = True
         for email_data in submissions:
             try:
                 await state.handle_new_submission(email_data, bot, config)
             except Exception as e:
-                logger.error("Error handling new submission: %s", e)
+                all_ok = False
+                logger.error("Error handling new submission: %s", e, exc_info=e)
+
+        # Only advance the watermark if every submission was processed.
+        # On partial failure we re-scan the window next poll; the UNIQUE
+        # constraint on gmail_message_id makes re-processing a no-op for
+        # submissions that were inserted successfully.
+        if all_ok:
+            _save_last_checked_ts(poll_start_ts)
 
     except Exception as e:
         logger.error("Gmail polling failed: %s", e)
