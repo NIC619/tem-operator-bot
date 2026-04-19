@@ -182,7 +182,13 @@ def set_tg_status_message_id(sub_id: int, message_id: int):
 
 # ── Assignments ──────────────────────────────────────────────────────────────
 
+def _norm_username(u: str) -> str:
+    """Normalize Telegram usernames for DB storage/lookup (case-insensitive)."""
+    return (u or "").strip().lstrip("@").lower()
+
+
 def insert_assignment(submission_id: int, reviewer_tg_username: str) -> int:
+    reviewer_tg_username = _norm_username(reviewer_tg_username)
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO assignments (submission_id, reviewer_tg_username)
@@ -199,6 +205,7 @@ def insert_assignment(submission_id: int, reviewer_tg_username: str) -> int:
 
 
 def get_assignment(submission_id: int, reviewer_tg_username: str):
+    reviewer_tg_username = _norm_username(reviewer_tg_username)
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM assignments
@@ -235,6 +242,7 @@ def get_done_reviewers(sub_id: int):
 
 def update_assignment_status(submission_id: int, reviewer_tg_username: str,
                               status: str, reviewer_tg_id: int = None):
+    reviewer_tg_username = _norm_username(reviewer_tg_username)
     with get_conn() as conn:
         if reviewer_tg_id is not None:
             conn.execute(
@@ -254,6 +262,7 @@ def update_assignment_status(submission_id: int, reviewer_tg_username: str,
 
 def mark_assignment_done(submission_id: int, reviewer_tg_username: str,
                          reviewer_tg_id: int = None):
+    reviewer_tg_username = _norm_username(reviewer_tg_username)
     with get_conn() as conn:
         if reviewer_tg_id is not None:
             conn.execute(
@@ -328,6 +337,7 @@ def get_recent_assignment_history(days: int = 90):
 
 def insert_rejection(submission_id: int, proposed_by: str, reason: str,
                      tg_proposal_message_id: int = None) -> int:
+    proposed_by = _norm_username(proposed_by)
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO rejections
@@ -349,6 +359,7 @@ def get_active_rejection(submission_id: int):
 
 def add_second_to_rejection(rejection_id: int, username: str):
     import json
+    username = _norm_username(username)
     with get_conn() as conn:
         row = conn.execute(
             "SELECT seconds FROM rejections WHERE id = ?", (rejection_id,)
