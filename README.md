@@ -126,6 +126,82 @@ pm2 startup
 
 ---
 
+## Deploying to Railway
+
+The bot is built to run unchanged on Railway. A persistent Volume holds
+the SQLite DB and the two non-secret-but-private config files
+(`config.yaml`, `reviewers.md`) plus the Gmail OAuth files. Secrets go
+in Railway environment variables.
+
+### 1. Generate the Gmail token locally (one-time)
+
+Railway containers are headless — the OAuth browser flow cannot run
+there. Generate `gmail_token.json` on your laptop first:
+
+```bash
+python main.py      # browser opens; approve; token.json is saved
+# stop the bot with Ctrl+C once you see "Gmail client ready."
+```
+
+### 2. Create a Railway project + volume
+
+1. Railway dashboard → New Project → Deploy from GitHub repo.
+2. In the service settings → Volumes → New Volume → mount path `/data`.
+
+### 3. Upload the volume files
+
+Open `railway shell` against the service (or use the file browser) and
+upload:
+
+```
+/data/tem_bot.db           # (optional, empty DB is created on first run)
+/data/config.yaml          # copy from your local config.yaml
+/data/reviewers.md         # copy from your local reviewers.md
+/data/credentials.json     # Gmail OAuth client secret
+/data/gmail_token.json     # token generated in step 1
+```
+
+Inside `config.yaml`, set `reviewers_file: /data/reviewers.md` so the
+LLM reads from the volume.
+
+### 4. Set environment variables
+
+In the Railway service → Variables tab:
+
+| Variable | Value |
+|----------|-------|
+| `TELEGRAM_BOT_TOKEN` | your bot token |
+| `OPENAI_API_KEY` | your OpenAI key |
+| `CONFIG_PATH` | `/data/config.yaml` |
+| `DB_PATH` | `/data/tem_bot.db` |
+| `GMAIL_CREDENTIALS_JSON_PATH` | `/data/credentials.json` |
+| `GMAIL_TOKEN_PATH` | `/data/gmail_token.json` |
+| `HEADLESS` | `1` |
+
+`HEADLESS=1` makes the bot refuse the OAuth browser flow and fail
+loudly if the token is missing, instead of hanging.
+
+### 5. Deploy
+
+Railway auto-builds from `railway.json` (Nixpacks + `python main.py`).
+Check the logs: you should see `Gmail client ready.` then
+`Bot starting, polling for updates…`.
+
+### 6. Editing reviewers / config later
+
+SSH into the service with `railway shell` and edit files under `/data`
+directly. `reviewers.md` is reloaded on every LLM call, no restart
+needed. `config.yaml` is cached — restart the service after editing it.
+
+### Backups
+
+SQLite on a Railway Volume has no automatic backups. Add a cron (or
+a scheduled GitHub Action) that copies `/data/tem_bot.db` to object
+storage daily. For zero-data-loss streaming, consider
+[litestream](https://litestream.io) replicating to S3.
+
+---
+
 ## Telegram Commands
 
 | Command | Who | What it does |
