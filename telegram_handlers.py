@@ -21,8 +21,7 @@ async def cmd_getid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = user.id if user else "N/A"
     username = f"@{user.username}" if user and user.username else str(user_id)
     await update.message.reply_text(
-        f"Chat ID: `{chat_id}`\nYour user ID: `{user_id}` ({username})",
-        parse_mode="Markdown",
+        f"Chat ID: {chat_id}\nYour user ID: {user_id} ({username})"
     )
 
 
@@ -34,7 +33,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("No active submissions right now.")
         return
 
-    lines = ["*Active Submissions:*\n"]
+    lines = ["Active Submissions:\n"]
     for sub in active:
         assignments = db.get_assignments_for_submission(sub["id"])
         reviewers = ", ".join(
@@ -42,12 +41,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             for a in assignments
         )
         lines.append(
-            f"*#{sub['id']}* — 《{sub['title']}》\n"
-            f"Status: `{sub['status']}`\n"
+            f"#{sub['id']} — 《{sub['title']}》\n"
+            f"Status: {sub['status']}\n"
             f"Reviewers: {reviewers or 'none'}\n"
         )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines))
 
 
 # ── /done <keyword> ───────────────────────────────────────────────────────────
