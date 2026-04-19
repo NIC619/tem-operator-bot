@@ -219,6 +219,18 @@ def _build_service(credentials_path: str, token_path: str):
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # run_local_server() opens a browser — only safe in a local dev
+            # environment. Set HEADLESS=1 in production (e.g. Railway) to
+            # refuse the browser flow and fail with a helpful message.
+            if os.environ.get("HEADLESS"):
+                raise RuntimeError(
+                    f"Gmail token missing or expired at {token_path} and "
+                    f"HEADLESS=1 is set, so the OAuth browser flow cannot "
+                    f"run. Generate the token on a local machine (run "
+                    f"`python main.py` and complete the consent flow), "
+                    f"then upload the resulting gmail_token.json to "
+                    f"{token_path} on the Railway volume."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
             creds = flow.run_local_server(port=0)
         with open(token_path, "w") as f:
