@@ -3,7 +3,7 @@ scheduler.py — APScheduler jobs: Gmail polling and follow-up checker.
 """
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -124,7 +124,7 @@ async def _poll_gmail(bot) -> None:
 
 async def _check_content_requests(bot) -> None:
     config = cfg.load()
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     try:
         expired = db.get_expired_content_requests(now)
@@ -143,7 +143,7 @@ async def _check_content_requests(bot) -> None:
 
 async def _check_followups(bot) -> None:
     config = cfg.load()
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     try:
         due = db.get_pending_followups(now)
