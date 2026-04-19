@@ -6,7 +6,7 @@ persistence and return data/messages for the Telegram layer to post.
 """
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytz
 
@@ -67,7 +67,7 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
 
     # Set status to pending_content and DM the operator
     db.update_submission_status(sub_id, "pending_content")
-    deadline = datetime.now() + timedelta(hours=24)
+    deadline = datetime.now(timezone.utc) + timedelta(hours=24)
     db.insert_content_request(sub_id, deadline)
 
     tz = pytz.timezone(config["workflow"].get("publish_timezone", "Asia/Taipei"))
@@ -76,9 +76,12 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
     dm_text = (
         f"📝 New submission #{sub_id}: 《{email_data['title']}》\n"
         f"Author: {email_data.get('author_name', '')} ({email_data['author_email']})\n\n"
-        f"Please paste the article draft content so I can assign the best reviewers:\n"
-        f"/content {sub_id} <paste full text here>\n\n"
-        f"Or type /skip {sub_id} to assign based on title alone.\n"
+        f"Please paste the article draft so I can assign the best reviewers. "
+        f"Long articles can be sent in multiple messages:\n"
+        f"  /content {sub_id} <first chunk>\n"
+        f"  /content {sub_id} <next chunk>\n"
+        f"  /content_done {sub_id}   ← finalize when done\n\n"
+        f"Or /skip {sub_id} to assign based on title alone.\n"
         f"Deadline: {deadline_local} (24h)"
     )
     try:
@@ -94,7 +97,8 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
                 chat_id=group_chat_id,
                 text=(
                     f"⚠️ Operator: please start a private chat with this bot and send:\n"
-                    f"/content {sub_id} <article text>\n"
+                    f"/content {sub_id} <article text> (may be split across messages)\n"
+                    f"/content_done {sub_id} to finalize, "
                     f"or /skip {sub_id} to assign based on title alone.\n"
                     f"(Submission #{sub_id}: 《{email_data['title']}》)"
                 ),
@@ -113,7 +117,7 @@ async def _proceed_with_assignment(sub_id: int, email_data: dict,
         assignment = await llm.pick_reviewers(email_data, config=config,
                                                article_content=article_content)
     except Exception as e:
-        logger.error("LLM reviewer assignment failed: %s", e)
+        logger.error("LLM reviewer assignment failed: %s", e, exc_info=e)
         group_chat_id = config["telegram"]["group_chat_id"]
         await bot.send_message(
             chat_id=group_chat_id,
@@ -123,6 +127,16 @@ async def _proceed_with_assignment(sub_id: int, email_data: dict,
                 f"Please assign reviewers manually with /override {sub_id} @user1 @user2"
             ),
         )
+        operator_user_id = config["telegram"].get("operator_user_id")
+        if operator_user_id:
+            try:
+                await bot.send_message(
+                    chat_id=operator_user_id,
+                    text=f"⚠️ LLM assignment failed for submission #{sub_id} "
+                         f"《{email_data['title']}》: {e}",
+                )
+            except Exception as notify_err:
+                logger.error("Failed to notify operator of LLM error: %s", notify_err)
         return
 
     category = assignment.get("category", "")
@@ -304,7 +318,17 @@ async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
             reply_markup=keyboard,
         )
     except Exception as e:
-        logger.error("Replacement assignment failed: %s", e)
+        logger.error("Replacement assignment failed: %s", e, exc_info=e)
+        operator_user_id = config["telegram"].get("operator_user_id")
+        if operator_user_id:
+            try:
+                await bot.send_message(
+                    chat_id=operator_user_id,
+                    text=f"⚠️ Replacement reviewer lookup failed for submission "
+                         f"#{sub_id} 《{sub['title']}》: {e}",
+                )
+            except Exception as notify_err:
+                logger.error("Failed to notify operator: %s", notify_err)
         # Build a pre-filled /override command showing already-confirmed reviewers
         confirmed = db.get_confirmed_reviewers(sub_id)
         confirmed_mentions = " ".join(f"@{a['reviewer_tg_username']}" for a in confirmed)
@@ -341,7 +365,7 @@ async def _transition_to_under_review(sub_id: int, bot, config: dict) -> None:
 
     # Schedule first follow-up
     followup_days = config["workflow"]["followup_interval_days"]
-    next_followup = datetime.now() + timedelta(days=followup_days)
+    next_followup = datetime.now(timezone.utc) + timedelta(days=followup_days)
     db.insert_followup(sub_id, next_followup)
 
     # Send "under review" email to submitter (run blocking Gmail call in thread)
@@ -545,6 +569,10 @@ async def handle_confirm_rejection(sub_id: int, operator_tg_id: int,
 
     rejection = db.get_active_rejection(sub_id)
     sub = db.get_submission_by_id(sub_id)
+    if not sub:
+        return "Submission not found."
+    if not rejection:
+        return "No active rejection proposal for this submission."
 
     db.set_submission_rejected(sub_id)
 
@@ -648,5 +676,5 @@ async def send_followup(followup_row, bot, config: dict) -> None:
     db.mark_followup_sent(followup_row["id"])
 
     followup_days = config["workflow"]["followup_interval_days"]
-    next_followup = datetime.now() + timedelta(days=followup_days)
+    next_followup = datetime.now(timezone.utc) + timedelta(days=followup_days)
     db.insert_followup(sub_id, next_followup)
