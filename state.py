@@ -16,6 +16,19 @@ import llm
 logger = logging.getLogger(__name__)
 
 
+# ── Operator Notifications ───────────────────────────────────────────────────
+
+async def notify_operator(bot, config: dict, text: str) -> None:
+    """DM the operator if operator_user_id is configured. Silent no-op otherwise."""
+    operator_user_id = config["telegram"].get("operator_user_id")
+    if not operator_user_id:
+        return
+    try:
+        await bot.send_message(chat_id=operator_user_id, text=text)
+    except Exception as e:
+        logger.warning("Failed to notify operator: %s", e)
+
+
 # ── Publish Date ─────────────────────────────────────────────────────────────
 
 def compute_publish_date(timezone_str: str = "Asia/Taipei",
@@ -216,6 +229,11 @@ async def handle_content_timeout(sub_id: int, bot, config: dict) -> None:
         return  # Already handled by operator
 
     logger.info("Content request timed out for submission #%d, proceeding without content.", sub_id)
+    await notify_operator(
+        bot, config,
+        f"⏰ Content request for #{sub_id} 《{sub['title']}》 timed out. "
+        f"Proceeding with title-only assignment."
+    )
     db.delete_content_request(sub_id)
 
     email_data = {
@@ -248,6 +266,12 @@ async def handle_reviewer_accept(sub_id: int, username: str, tg_user_id: int,
 
     db.update_assignment_status(sub_id, username, "confirmed", tg_user_id)
 
+    sub = db.get_submission_by_id(sub_id)
+    await notify_operator(
+        bot, config,
+        f"✅ @{username} accepted review for #{sub_id} 《{sub['title']}》."
+    )
+
     all_assignments = db.get_assignments_for_submission(sub_id)
     active = [a for a in all_assignments if a["status"] != "declined"]
     still_pending = [a for a in active if a["status"] == "pending"]
@@ -271,6 +295,11 @@ async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
     db.update_assignment_status(sub_id, username, "declined", tg_user_id)
 
     sub = db.get_submission_by_id(sub_id)
+    await notify_operator(
+        bot, config,
+        f"❌ @{username} declined review for #{sub_id} 《{sub['title']}》. "
+        f"Looking for a replacement."
+    )
     group_chat_id = config["telegram"]["group_chat_id"]
 
     # Find a replacement
@@ -361,6 +390,12 @@ async def _transition_to_under_review(sub_id: int, bot, config: dict) -> None:
 
     db.update_submission_status(sub_id, "under_review")
 
+    await notify_operator(
+        bot, config,
+        f"📖 #{sub_id} 《{sub['title']}》 is now under review. "
+        f"Reviewers: {', '.join(f'@{r}' for r in reviewers)}. Author notified."
+    )
+
     group_chat_id = config["telegram"]["group_chat_id"]
 
     # Schedule first follow-up
@@ -420,6 +455,11 @@ async def handle_reviewer_done(sub_id: int, username: str, tg_user_id: int,
 
     db.mark_assignment_done(sub_id, username, tg_user_id)
 
+    await notify_operator(
+        bot, config,
+        f"✅ @{username} marked review done for #{sub_id} 《{sub['title']}》."
+    )
+
     done_reviewers = db.get_done_reviewers(sub_id)
     confirmed_reviewers = db.get_confirmed_reviewers(sub_id)
     # After marking done, re-fetch
@@ -464,6 +504,12 @@ async def _transition_to_accepted(sub_id: int, done_assignments: list,
 
     db.set_submission_accepted(sub_id, publish_date_str)
 
+    await notify_operator(
+        bot, config,
+        f"🎉 #{sub_id} 《{sub['title']}》 accepted. "
+        f"Publish scheduled: {publish_date_str} 09:30 Asia/Taipei. Author notified."
+    )
+
     group_chat_id = config["telegram"]["group_chat_id"]
     n = len(done_assignments)
     header = (
@@ -496,6 +542,12 @@ async def handle_rejection_proposal(sub_id: int, proposed_by: str,
     group_chat_id = config["telegram"]["group_chat_id"]
 
     rejection_id = db.insert_rejection(sub_id, proposed_by, reason)
+
+    await notify_operator(
+        bot, config,
+        f"🚫 @{proposed_by} proposed rejecting #{sub_id} 《{sub['title']}》.\n"
+        f"Reason: {reason}\nWaiting for 2 seconds."
+    )
 
     title_keyword = sub["title"].split()[0].lower() if sub["title"] else str(sub_id)
     msg = await bot.send_message(
@@ -535,7 +587,18 @@ async def handle_second(sub_id: int, username: str, bot, config: dict) -> str:
         f"({count}/2 seconds)"
     )
 
+    await notify_operator(
+        bot, config,
+        f"👍 @{username} seconded rejection of #{sub_id} 《{sub['title']}》 "
+        f"({count}/2)."
+    )
+
     if count >= 2:
+        await notify_operator(
+            bot, config,
+            f"⚠️ Rejection of #{sub_id} 《{sub['title']}》 has 2 seconds. "
+            f"Your confirmation is required in the group."
+        )
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(
@@ -674,6 +737,12 @@ async def send_followup(followup_row, bot, config: dict) -> None:
     )
 
     db.mark_followup_sent(followup_row["id"])
+
+    await notify_operator(
+        bot, config,
+        f"👋 Follow-up sent for #{sub_id} 《{sub['title']}》 "
+        f"to {reviewers_mention}."
+    )
 
     followup_days = config["workflow"]["followup_interval_days"]
     next_followup = datetime.now(timezone.utc) + timedelta(days=followup_days)
