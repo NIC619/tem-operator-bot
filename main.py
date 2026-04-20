@@ -62,6 +62,7 @@ def _bootstrap_volume_files() -> None:
         if target.exists():
             logger.info("Bootstrap: %s already exists, skipping.", target)
             continue
+        b64 = "".join(b64.split())  # tolerate whitespace/newlines from env var UIs
         try:
             data = base64.b64decode(b64, validate=True)
         except Exception as e:
