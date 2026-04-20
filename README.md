@@ -172,6 +172,11 @@ In the Railway service → Variables tab:
 |----------|-------|
 | `TELEGRAM_BOT_TOKEN` | your bot token |
 | `OPENAI_API_KEY` | your OpenAI key |
+| `TELEGRAM_GROUP_CHAT_ID` | e.g. `-1001234567890` |
+| `TELEGRAM_OPERATOR_USER_ID` | your Telegram user ID |
+| `TELEGRAM_POLL_INTERVAL_SECONDS` | e.g. `3` |
+| `GMAIL_POLL_INTERVAL_SECONDS` | e.g. `300` |
+| `WORKFLOW_FOLLOWUP_INTERVAL_DAYS` | e.g. `14` |
 | `CONFIG_PATH` | `/data/config.yaml` |
 | `DB_PATH` | `/data/tem_bot.db` |
 | `GMAIL_CREDENTIALS_JSON_PATH` | `/data/credentials.json` |
@@ -179,7 +184,8 @@ In the Railway service → Variables tab:
 | `HEADLESS` | `1` |
 
 `HEADLESS=1` makes the bot refuse the OAuth browser flow and fail
-loudly if the token is missing, instead of hanging.
+loudly if the token is missing, instead of hanging. The five tunables
+above override the corresponding values in `config.yaml` when set.
 
 ### 5. Deploy
 
