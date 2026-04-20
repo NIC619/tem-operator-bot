@@ -122,12 +122,28 @@ Then in Railway:
 Same pattern applies to `config.yaml`, `credentials.json`, and
 `gmail_token.json` via their respective `_B64` vars.
 
+#### When `railway ssh` isn't available (crash loop or sleeping service)
+
+If the service is crash-looping (e.g. expired Gmail token) or scaled
+to zero, `railway ssh` will refuse to connect and you can't `rm` the
+stale file. Escape hatch:
+
+1. Update the relevant `_B64` var with the new blob.
+2. Set `BOOTSTRAP_OVERWRITE=1` in Variables — this makes the
+   bootstrap overwrite existing files instead of skipping them.
+3. Redeploy. Watch logs for `Gmail client ready.` and
+   `Bot starting, polling for updates…`.
+4. **Immediately remove `BOOTSTRAP_OVERWRITE`** from Variables. If
+   left set, it will re-overwrite the volume files on every boot,
+   clobbering any later in-place edits made via `railway ssh`.
+
 ## Which env vars are permanent vs. one-shot
 
 | Kind | Examples | When |
 |------|----------|------|
 | Permanent | `CONFIG_PATH`, `DB_PATH`, `GMAIL_CREDENTIALS_JSON_PATH`, `GMAIL_TOKEN_PATH`, `REVIEWERS_MD_PATH`, `HEADLESS` | Always keep set — they tell the bot to read/write on the `/data` volume instead of the ephemeral container disk |
 | One-shot | `CONFIG_YAML_B64`, `REVIEWERS_MD_B64`, `GMAIL_CREDENTIALS_B64`, `GMAIL_TOKEN_B64` | Delete from Variables after the first successful deploy. They re-run the bootstrap only when the target file is missing |
+| One-shot | `BOOTSTRAP_OVERWRITE` | Set to `1` only when you need the bootstrap to overwrite an existing volume file (e.g. rotating the Gmail token while the service is crash-looping and SSH is unavailable). **Delete immediately after the deploy succeeds** — otherwise the volume files get clobbered on every boot |
 
 ## Backups
 
