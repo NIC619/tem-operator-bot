@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from telegram import BotCommand, BotCommandScopeChat
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler
 from telegram.request import HTTPXRequest
 
@@ -76,10 +77,33 @@ def _bootstrap_volume_files() -> None:
         logger.info("Bootstrap: wrote %s (%d bytes) from %s", target, len(data), env_b64)
 
 
+PUBLIC_COMMANDS = [
+    BotCommand("getid", "Show this chat's ID and your user ID"),
+    BotCommand("status", "List active submissions and their state"),
+    BotCommand("done", "Mark your review as done: /done <keyword>"),
+    BotCommand("reject", "Propose rejecting: /reject <keyword> <reason>"),
+    BotCommand("second", "Second a rejection: /second <keyword>"),
+    BotCommand("override", "Operator: reassign reviewers /override <sub_id> @user1 [@user2]"),
+]
+
+OPERATOR_COMMANDS = PUBLIC_COMMANDS + [
+    BotCommand("content", "Append draft text: /content <sub_id> <text>"),
+    BotCommand("content_done", "Finalize buffered content: /content_done <sub_id>"),
+    BotCommand("skip", "Skip content request: /skip <sub_id>"),
+]
+
+
 async def post_init(application: Application) -> None:
     """Called by PTB after the app is initialised, within its event loop."""
     db.init_db()
     logger.info("Database initialised.")
+    await application.bot.set_my_commands(PUBLIC_COMMANDS)
+    operator_id = cfg.load()["telegram"].get("operator_user_id")
+    if operator_id:
+        await application.bot.set_my_commands(
+            OPERATOR_COMMANDS, scope=BotCommandScopeChat(chat_id=operator_id)
+        )
+    logger.info("Bot command menu registered.")
     start_scheduler(application.bot)
 
 
