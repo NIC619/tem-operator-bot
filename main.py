@@ -59,7 +59,7 @@ def _bootstrap_volume_files() -> None:
         if not b64:
             continue
         target = Path(os.environ.get(env_path, default_path))
-        if target.exists():
+        if target.exists() and not os.environ.get("BOOTSTRAP_OVERWRITE"):
             logger.info("Bootstrap: %s already exists, skipping.", target)
             continue
         b64 = "".join(b64.split())  # tolerate whitespace/newlines from env var UIs
