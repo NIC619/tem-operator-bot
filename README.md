@@ -208,9 +208,54 @@ Check the logs: you should see `Gmail client ready.` then
 
 ### 6. Editing reviewers / config later
 
-SSH into the service with `railway shell` and edit files under `/data`
-directly. `reviewers.md` is reloaded on every LLM call, no restart
-needed. `config.yaml` is cached — restart the service after editing it.
+`railway shell` is **not** an SSH session — it just wraps a local
+shell with the service's env vars. Use `railway ssh` for a real shell
+inside the running container.
+
+#### Option 1 — `railway ssh` (preferred, once the service is healthy)
+
+```bash
+railway ssh
+# inside the container:
+nano /data/reviewers.md
+# or, without a text editor:
+cat > /data/reviewers.md <<'EOF'
+<paste new content>
+EOF
+```
+
+- `reviewers.md` is **reread on every LLM call** — no restart needed.
+- `config.yaml` is **cached in memory** after first load — after
+  editing, restart the service (Deployments → Restart).
+
+#### Option 2 — Railway volume file browser (if your plan exposes it)
+
+Service → Volumes → click the volume → edit files in place.
+
+#### Option 3 — re-bootstrap fallback (no SSH available)
+
+```bash
+# locally:
+base64 -i reviewers.md | pbcopy
+```
+
+Then in Railway:
+
+1. Set (or update) `REVIEWERS_MD_B64` with the new blob.
+2. `railway ssh` → `rm /data/reviewers.md` (the bootstrap skips
+   existing files, so you must delete first).
+3. Redeploy. Bootstrap rewrites the file.
+4. Remove `REVIEWERS_MD_B64` from Variables once done.
+
+Same pattern applies to `config.yaml`, `credentials.json`, and
+`gmail_token.json` via their respective `_B64` vars.
+
+### Which `*_PATH` env vars are permanent vs. one-shot
+
+| Kind | Examples | When |
+|------|----------|------|
+| Permanent | `CONFIG_PATH`, `DB_PATH`, `GMAIL_CREDENTIALS_JSON_PATH`, `GMAIL_TOKEN_PATH`, `REVIEWERS_MD_PATH`, `HEADLESS` | Always keep set — they tell the bot to read/write on the `/data` volume instead of the ephemeral container disk |
+| One-shot | `CONFIG_YAML_B64`, `REVIEWERS_MD_B64`, `GMAIL_CREDENTIALS_B64`, `GMAIL_TOKEN_B64` | Delete from Variables after the first successful deploy. They re-run the bootstrap only when the target file is missing |
 
 ### Backups
 
