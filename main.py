@@ -4,7 +4,10 @@ main.py — Entry point: initialises DB, registers Telegram handlers, starts sch
 PTB v21 manages its own event loop via app.run_polling() — do NOT wrap in asyncio.run().
 Use post_init to run setup code inside PTB's event loop.
 """
+import base64
 import logging
+import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler
@@ -38,6 +41,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Volume file bootstrap: on platforms like Railway the /data volume starts
+# empty and there's no SSH path in before the service first runs. If these
+# *_B64 env vars are set and the target file is missing, write it on boot.
+# Once the volume holds the files, the env vars can be removed.
+_BOOTSTRAP_FILES = [
+    ("CONFIG_YAML_B64",       "CONFIG_PATH",                 "./config.yaml"),
+    ("REVIEWERS_MD_B64",      "REVIEWERS_MD_PATH",           "./reviewers.md"),
+    ("GMAIL_CREDENTIALS_B64", "GMAIL_CREDENTIALS_JSON_PATH", "./credentials.json"),
+    ("GMAIL_TOKEN_B64",       "GMAIL_TOKEN_PATH",            "./gmail_token.json"),
+]
+
+
+def _bootstrap_volume_files() -> None:
+    for env_b64, env_path, default_path in _BOOTSTRAP_FILES:
+        b64 = os.environ.get(env_b64)
+        if not b64:
+            continue
+        target = Path(os.environ.get(env_path, default_path))
+        if target.exists():
+            logger.info("Bootstrap: %s already exists, skipping.", target)
+            continue
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except Exception as e:
+            raise RuntimeError(f"{env_b64} is not valid base64: {e}") from e
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        try:
+            target.chmod(0o600)
+        except OSError:
+            pass
+        logger.info("Bootstrap: wrote %s (%d bytes) from %s", target, len(data), env_b64)
+
+
 async def post_init(application: Application) -> None:
     """Called by PTB after the app is initialised, within its event loop."""
     db.init_db()
@@ -57,6 +94,10 @@ async def error_handler(update: object, context) -> None:
 
 
 def main() -> None:
+    # Seed volume files from base64 env vars if they're missing. Runs before
+    # config.load() and GmailClient() so subsequent steps find the files.
+    _bootstrap_volume_files()
+
     token = cfg.TELEGRAM_BOT_TOKEN
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")

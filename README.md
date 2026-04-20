@@ -148,21 +148,29 @@ python main.py      # browser opens; approve; token.json is saved
 1. Railway dashboard → New Project → Deploy from GitHub repo.
 2. In the service settings → Volumes → New Volume → mount path `/data`.
 
-### 3. Upload the volume files
+### 3. Seed the volume files via base64 env vars (first deploy only)
 
-Open `railway shell` against the service (or use the file browser) and
-upload:
+Railway's container filesystem is empty on first boot and there's no
+way to SSH in *before* the service has ever run. The bot has a small
+bootstrap that decodes four base64 env vars into the volume on startup
+(writes only if the target file is missing, so it's a no-op on later
+boots).
 
+On your local machine, generate the four base64 blobs:
+
+```bash
+base64 -i config.yaml       | pbcopy   # paste into CONFIG_YAML_B64
+base64 -i reviewers.md      | pbcopy   # paste into REVIEWERS_MD_B64
+base64 -i credentials.json  | pbcopy   # paste into GMAIL_CREDENTIALS_B64
+base64 -i gmail_token.json  | pbcopy   # paste into GMAIL_TOKEN_B64
 ```
-/data/tem_bot.db           # (optional, empty DB is created on first run)
-/data/config.yaml          # copy from your local config.yaml
-/data/reviewers.md         # copy from your local reviewers.md
-/data/credentials.json     # Gmail OAuth client secret
-/data/gmail_token.json     # token generated in step 1
-```
 
-Inside `config.yaml`, set `reviewers_file: /data/reviewers.md` so the
-LLM reads from the volume.
+Paste each into Railway → Variables. Make sure your local
+`config.yaml` has `reviewers_file: /data/reviewers.md` before you
+encode it.
+
+After the first successful deploy, you can remove the four `_B64`
+variables — the files now live on the volume.
 
 ### 4. Set environment variables
 
@@ -181,7 +189,12 @@ In the Railway service → Variables tab:
 | `DB_PATH` | `/data/tem_bot.db` |
 | `GMAIL_CREDENTIALS_JSON_PATH` | `/data/credentials.json` |
 | `GMAIL_TOKEN_PATH` | `/data/gmail_token.json` |
+| `REVIEWERS_MD_PATH` | `/data/reviewers.md` |
 | `HEADLESS` | `1` |
+| `CONFIG_YAML_B64` | base64 of local `config.yaml` (first deploy only) |
+| `REVIEWERS_MD_B64` | base64 of local `reviewers.md` (first deploy only) |
+| `GMAIL_CREDENTIALS_B64` | base64 of `credentials.json` (first deploy only) |
+| `GMAIL_TOKEN_B64` | base64 of `gmail_token.json` (first deploy only) |
 
 `HEADLESS=1` makes the bot refuse the OAuth browser flow and fail
 loudly if the token is missing, instead of hanging. The five tunables
