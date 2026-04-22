@@ -152,7 +152,7 @@ def get_submission_by_title_keyword(keyword: str):
         return conn.execute(
             """SELECT * FROM submissions
                WHERE lower(title) LIKE lower(?)
-               AND status NOT IN ('accepted', 'rejected')""",
+               AND status NOT IN ('accepted', 'rejected', 'omitted')""",
             (f"%{keyword}%",)
         ).fetchall()
 

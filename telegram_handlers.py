@@ -351,6 +351,56 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await state.handle_content_provided(sub_id, "", context.bot, config)
 
 
+# ── /omit <sub_id> [reason] ───────────────────────────────────────────────────
+
+async def cmd_omit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Terminate a submission so the bot ignores it entirely.
+
+    Used when the operator wants to drop a submission without running it
+    through the review pipeline (e.g. a production email received while the
+    bot is running in testing mode, or vice versa).
+    """
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /omit.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /omit <sub_id> [reason]")
+        return
+
+    try:
+        sub_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("sub_id must be a number.")
+        return
+
+    reason = " ".join(context.args[1:]).strip()
+
+    sub = db.get_submission_by_id(sub_id)
+    if not sub:
+        await update.message.reply_text(f"Submission #{sub_id} not found.")
+        return
+
+    if sub["status"] in ("accepted", "rejected", "omitted"):
+        await update.message.reply_text(
+            f"Submission #{sub_id} is already {sub['status']}; nothing to omit."
+        )
+        return
+
+    if db.has_content_request(sub_id):
+        db.delete_content_request(sub_id)
+    db.update_submission_status(sub_id, "omitted")
+
+    suffix = f" — {reason}" if reason else ""
+    await update.message.reply_text(
+        f"🗑 Omitted 《{sub['title']}》 (#{sub_id}){suffix}. The bot will ignore it."
+    )
+
+
 # ── Button: accept_<sub_id>_<username> ───────────────────────────────────────
 
 async def cb_accept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

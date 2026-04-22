@@ -148,6 +148,7 @@ pm2 startup
 | `/content <sub_id> <text>` | Operator | Appends article draft text to the buffer (may be called multiple times for long articles) |
 | `/content_done <sub_id>` | Operator | Finalizes buffered content and triggers reviewer assignment |
 | `/skip <sub_id>` | Operator | Skips content request; assigns based on title alone |
+| `/omit <sub_id> [reason]` | Operator | Drops a submission so the bot ignores it (e.g. wrong-mode email) |
 
 Inline buttons appear automatically — reviewers tap to accept/decline and to mark done.
 

@@ -27,6 +27,7 @@ from telegram_handlers import (
     cmd_content,
     cmd_content_done,
     cmd_skip,
+    cmd_omit,
     cb_accept,
     cb_decline,
     cb_done,
@@ -90,6 +91,7 @@ OPERATOR_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand("content", "Append draft text: /content <sub_id> <text>"),
     BotCommand("content_done", "Finalize buffered content: /content_done <sub_id>"),
     BotCommand("skip", "Skip content request: /skip <sub_id>"),
+    BotCommand("omit", "Drop a submission: /omit <sub_id> [reason]"),
 ]
 
 
@@ -164,6 +166,7 @@ def main() -> None:
     app.add_handler(CommandHandler("content", cmd_content))
     app.add_handler(CommandHandler("content_done", cmd_content_done))
     app.add_handler(CommandHandler("skip", cmd_skip))
+    app.add_handler(CommandHandler("omit", cmd_omit))
 
     # Button callbacks
     app.add_handler(CallbackQueryHandler(cb_accept, pattern=r"^accept_"))
