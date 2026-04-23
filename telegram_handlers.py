@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 import config as cfg
 import db
+import reviewers as reviewers_mod
 import state
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,161 @@ async def cmd_override(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         config=config,
     )
     await update.message.reply_text(answer)
+
+
+# ── /reviewers ────────────────────────────────────────────────────────────────
+
+async def cmd_reviewers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show current contents of reviewers.md (operator only)."""
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /reviewers.")
+        return
+
+    path = config.get("reviewers_file", "./reviewers.md")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        await update.message.reply_text(
+            f"reviewers.md not found at {path}."
+        )
+        return
+    except OSError as e:
+        await update.message.reply_text(f"Failed to read {path}: {e}")
+        return
+
+    header = f"📋 {path} ({len(content)} chars)\n\n"
+    # Telegram hard limit is 4096; leave headroom for the header/fences.
+    chunk_size = 3800
+    body = content or "(empty)"
+    first = True
+    for i in range(0, len(body), chunk_size):
+        piece = body[i:i + chunk_size]
+        prefix = header if first else ""
+        await update.message.reply_text(f"{prefix}```\n{piece}\n```",
+                                        parse_mode="Markdown")
+        first = False
+
+
+def _reviewers_path(config: dict) -> str:
+    return config.get("reviewers_file", "./reviewers.md")
+
+
+async def cmd_add_reviewer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Operator: /add_reviewer <category_keyword> <@username>"""
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /add_reviewer.")
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /add_reviewer <category_keyword> <@username>\n"
+            "Example: /add_reviewer layer2 @alice\n"
+            "Use /list_categories to see available categories."
+        )
+        return
+
+    keyword = " ".join(context.args[:-1]).strip()
+    username = context.args[-1].strip()
+
+    path = _reviewers_path(config)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        await update.message.reply_text(f"Failed to read {path}: {e}")
+        return
+
+    try:
+        new_content, matched = reviewers_mod.add_reviewer(content, keyword, username)
+    except ValueError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    except OSError as e:
+        await update.message.reply_text(f"Failed to write {path}: {e}")
+        return
+
+    await update.message.reply_text(
+        f"✅ Added @{username.lstrip('@')} to 《{matched}》."
+    )
+
+
+async def cmd_remove_reviewer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Operator: /remove_reviewer <@username> — removes from all categories."""
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /remove_reviewer.")
+        return
+
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("Usage: /remove_reviewer <@username>")
+        return
+
+    username = context.args[0].strip()
+
+    path = _reviewers_path(config)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        await update.message.reply_text(f"Failed to read {path}: {e}")
+        return
+
+    try:
+        new_content, affected = reviewers_mod.remove_reviewer(content, username)
+    except ValueError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    except OSError as e:
+        await update.message.reply_text(f"Failed to write {path}: {e}")
+        return
+
+    cats = ", ".join(f"《{c}》" for c in affected)
+    await update.message.reply_text(
+        f"✅ Removed @{username.lstrip('@')} from: {cats}"
+    )
+
+
+async def cmd_list_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Operator: /list_categories — show category headings for /add_reviewer."""
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /list_categories.")
+        return
+
+    path = _reviewers_path(config)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        await update.message.reply_text(f"Failed to read {path}: {e}")
+        return
+
+    cats = reviewers_mod.list_subcategories(content)
+    if not cats:
+        await update.message.reply_text("No categories found in reviewers.md.")
+        return
+    lines = "\n".join(f"• {c}" for c in cats)
+    await update.message.reply_text(f"Categories:\n{lines}")
 
 
 # ── /content <sub_id> <text> ──────────────────────────────────────────────────

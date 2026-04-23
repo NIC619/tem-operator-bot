@@ -28,6 +28,10 @@ from telegram_handlers import (
     cmd_content_done,
     cmd_skip,
     cmd_omit,
+    cmd_reviewers,
+    cmd_add_reviewer,
+    cmd_remove_reviewer,
+    cmd_list_categories,
     cb_accept,
     cb_decline,
     cb_done,
@@ -92,6 +96,10 @@ OPERATOR_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand("content_done", "Finalize buffered content: /content_done <sub_id>"),
     BotCommand("skip", "Skip content request: /skip <sub_id>"),
     BotCommand("omit", "Drop a submission: /omit <sub_id> [reason]"),
+    BotCommand("reviewers", "Show current reviewers.md contents"),
+    BotCommand("list_categories", "Show reviewer category headings"),
+    BotCommand("add_reviewer", "Add a reviewer: /add_reviewer <category> @user"),
+    BotCommand("remove_reviewer", "Remove a reviewer: /remove_reviewer @user"),
 ]
 
 
@@ -167,6 +175,10 @@ def main() -> None:
     app.add_handler(CommandHandler("content_done", cmd_content_done))
     app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(CommandHandler("omit", cmd_omit))
+    app.add_handler(CommandHandler("reviewers", cmd_reviewers))
+    app.add_handler(CommandHandler("add_reviewer", cmd_add_reviewer))
+    app.add_handler(CommandHandler("remove_reviewer", cmd_remove_reviewer))
+    app.add_handler(CommandHandler("list_categories", cmd_list_categories))
 
     # Button callbacks
     app.add_handler(CallbackQueryHandler(cb_accept, pattern=r"^accept_"))
