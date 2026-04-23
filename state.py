@@ -504,10 +504,14 @@ async def _transition_to_accepted(sub_id: int, done_assignments: list,
 
     db.set_submission_accepted(sub_id, publish_date_str)
 
+    publish_time_str = config["workflow"].get("publish_time", "09:30")
+    publish_tz_str = config["workflow"].get("publish_timezone", "Asia/Taipei")
+
     await notify_operator(
         bot, config,
-        f"🎉 #{sub_id} 《{sub['title']}》 accepted. "
-        f"Publish scheduled: {publish_date_str} 09:30 Asia/Taipei. Author notified."
+        f"🎉 #{sub_id} 《{sub['title']}》 accepted. Author notified.\n\n"
+        f"📌 Action needed: please schedule publishing on Medium for "
+        f"{publish_date_str} {publish_time_str} ({publish_tz_str})."
     )
 
     group_chat_id = config["telegram"]["group_chat_id"]
@@ -521,7 +525,8 @@ async def _transition_to_accepted(sub_id: int, done_assignments: list,
         chat_id=group_chat_id,
         text=(
             f"{header}\n\n"
-            f"Scheduled to publish: {publish_date_str} at 09:30 (Asia/Taipei)\n\n"
+            f"Suggested publish date: {publish_date_str} at "
+            f"{publish_time_str} ({publish_tz_str})\n\n"
             f"Author has been notified."
         ),
     )
