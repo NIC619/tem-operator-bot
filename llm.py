@@ -1,6 +1,7 @@
 """
 llm.py — OpenAI-based reviewer assignment for the TEM review bot.
 """
+import asyncio
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import reviewers as reviewers_mod
 logger = logging.getLogger(__name__)
 
 _client = None
+_MAX_LLM_ATTEMPTS = 3
 
 
 def _get_client() -> AsyncOpenAI:
@@ -131,20 +133,8 @@ async def pick_reviewers(email_data: dict, config: dict = None,
         workload_summary=workload_summary,
     )
 
-    client = _get_client()
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0.3,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-
-    raw = response.choices[0].message.content.strip()
-    result = _parse_json_response(raw)
-    _validate_reviewers_exist(result, reviewer_md,
-                              required_keys=("reviewer1",))
+    result = await _call_llm_with_retry(system_prompt, user_prompt, reviewer_md,
+                                         required_keys=("reviewer1",))
     logger.info("LLM picked reviewers: %s, %s (category: %s)",
                 result.get("reviewer1"), result.get("reviewer2"), result.get("category"))
     return result
@@ -187,20 +177,8 @@ async def pick_replacement_reviewer(email_data: dict, declined_username: str,
         + extra_constraint
     )
 
-    client = _get_client()
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0.3,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-
-    raw = response.choices[0].message.content.strip()
-    result = _parse_json_response(raw)
-    _validate_reviewers_exist(result, reviewer_md,
-                              required_keys=("reviewer1",))
+    result = await _call_llm_with_retry(system_prompt, user_prompt, reviewer_md,
+                                         required_keys=("reviewer1",))
     logger.info("LLM picked replacement reviewer: %s", result.get("reviewer1"))
     return result
 
@@ -233,6 +211,48 @@ def _validate_reviewers_exist(result: dict, reviewer_md: str,
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+async def _call_llm_with_retry(system_prompt: str, user_prompt: str,
+                                reviewer_md: str,
+                                required_keys=("reviewer1",)) -> dict:
+    """
+    Call gpt-4o in JSON mode, parse + validate, retry on empty/bad responses.
+    Raises the last exception if all attempts fail.
+    """
+    client = _get_client()
+    last_err: Exception | None = None
+    for attempt in range(1, _MAX_LLM_ATTEMPTS + 1):
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o",
+                temperature=0.3,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            choice = response.choices[0]
+            raw = (choice.message.content or "").strip()
+            finish_reason = getattr(choice, "finish_reason", None)
+            if not raw:
+                raise ValueError(
+                    f"LLM returned empty content (finish_reason={finish_reason})"
+                )
+            result = _parse_json_response(raw)
+            _validate_reviewers_exist(result, reviewer_md,
+                                      required_keys=required_keys)
+            return result
+        except Exception as e:
+            last_err = e
+            logger.warning(
+                "LLM attempt %d/%d failed: %s", attempt, _MAX_LLM_ATTEMPTS, e,
+            )
+            if attempt < _MAX_LLM_ATTEMPTS:
+                await asyncio.sleep(1.5 * attempt)
+    assert last_err is not None
+    raise last_err
+
+
 def _parse_json_response(raw: str) -> dict:
     """Strip markdown fences and parse JSON."""
     raw = raw.strip()
@@ -244,5 +264,6 @@ def _parse_json_response(raw: str) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        logger.error("Failed to parse LLM JSON response: %s\nRaw: %s", e, raw)
+        logger.error("Failed to parse LLM JSON response: %s\nRaw (len=%d): %r",
+                     e, len(raw), raw)
         raise ValueError(f"LLM returned invalid JSON: {e}") from e
