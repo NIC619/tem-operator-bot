@@ -202,9 +202,13 @@ def _validate_reviewers_exist(result: dict, reviewer_md: str,
             continue
         canonical = known_lower.get(val.lower())
         if not canonical:
+            logger.error(
+                "Reviewer '%s' for %s not in reviewers.md. Known reviewers: %s",
+                val, key, known,
+            )
             raise ValueError(
                 f"LLM returned unknown reviewer '{val}' for {key}; "
-                f"not in reviewers.md"
+                f"not in reviewers.md (known: {known})"
             )
         result[key] = canonical
 
