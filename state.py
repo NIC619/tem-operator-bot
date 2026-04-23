@@ -706,14 +706,13 @@ async def send_followup(followup_row, bot, config: dict) -> None:
     if not sub or sub["status"] != "under_review":
         return
 
-    confirmed = db.get_confirmed_reviewers(sub_id)
     all_assignments = db.get_assignments_for_submission(sub_id)
-    active = [a for a in all_assignments if a["status"] in ("confirmed", "done")]
+    pending = [a for a in all_assignments if a["status"] == "confirmed"]
 
-    if not active:
+    if not pending:
         return
 
-    reviewers = [a["reviewer_tg_username"] for a in active]
+    reviewers = [a["reviewer_tg_username"] for a in pending]
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
