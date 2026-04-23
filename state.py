@@ -670,16 +670,48 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
         return f"Submission #{sub_id} not found."
 
     db.clear_pending_assignments(sub_id)
-    for username in new_reviewers:
+
+    # Deduplicate the operator's input (case-insensitive) and skip anyone
+    # who already has a surviving assignment (confirmed/done), so listing
+    # an existing reviewer doesn't create a duplicate row.
+    existing = {
+        a["reviewer_tg_username"].lower()
+        for a in db.get_assignments_for_submission(sub_id)
+    }
+    added: list[str] = []
+    skipped_existing: list[str] = []
+    seen: set[str] = set()
+    for raw in new_reviewers:
+        username = raw.strip().lstrip("@")
+        if not username:
+            continue
+        key = username.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in existing:
+            skipped_existing.append(username)
+            continue
         db.insert_assignment(sub_id, username)
+        added.append(username)
+
     db.update_submission_status(sub_id, "assigning")
 
     group_chat_id = config["telegram"]["group_chat_id"]
+
+    if not added:
+        note = ""
+        if skipped_existing:
+            note = (
+                f" Already assigned: "
+                f"{', '.join(f'@{u}' for u in skipped_existing)}."
+            )
+        return f"Override: nothing to add.{note}"
+
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    rows = []
-    for username in new_reviewers:
-        rows.append([
+    rows = [
+        [
             InlineKeyboardButton(
                 f"✅ @{username} — Yes",
                 callback_data=f"accept_{sub_id}_{username}"
@@ -688,10 +720,12 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
                 f"❌ @{username} — Can't",
                 callback_data=f"decline_{sub_id}_{username}"
             ),
-        ])
+        ]
+        for username in added
+    ]
 
     keyboard = InlineKeyboardMarkup(rows)
-    reviewers_str = " ".join(f"@{u}" for u in new_reviewers)
+    reviewers_str = " ".join(f"@{u}" for u in added)
     await bot.send_message(
         chat_id=group_chat_id,
         text=(
@@ -700,7 +734,13 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
         ),
         reply_markup=keyboard,
     )
-    return f"Override applied. New reviewers: {reviewers_str}"
+    msg = f"Override applied. New reviewers: {reviewers_str}"
+    if skipped_existing:
+        msg += (
+            f" (already assigned, skipped: "
+            f"{', '.join(f'@{u}' for u in skipped_existing)})"
+        )
+    return msg
 
 
 # ── Follow-up ─────────────────────────────────────────────────────────────────

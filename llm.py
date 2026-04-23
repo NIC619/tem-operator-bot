@@ -74,11 +74,15 @@ _SYSTEM_PROMPT = """\
 
 你的任務：
 1. 分析投稿文章的主題
-2. 從 Reviewer 列表中選出最適合的 1～2 位 Reviewer
-3. 參考近期分配紀錄，避免重複指派同一位 Reviewer
-4. 如果有多位合適的 Reviewer，優先選擇近期分配次數較少的人
-5. 如果該類別只有 1 位合適的 Reviewer，只選 1 位即可，reviewer2 留空字串 ""
-6. 簡要說明為什麼選擇這些人
+2. 從 Reviewer 列表中選出最適合的 Reviewer
+3. **每篇投稿必須指派兩位 Reviewer（reviewer1 與 reviewer2）。**
+   - 只要該類別的 Reviewer 候選人 ≥ 2 位，就一定要選出 2 位，即使他們近期都分配過案件。
+   - 只有在該類別實際上只有 1 位可選的 Reviewer 時，才可以把 reviewer2 留空字串 ""。
+4. 近期分配紀錄只作為「工作量平衡的參考」使用：
+   - 優先從近期分配次數較少的人選。
+   - 但不能因為某人最近分配過，就減少回傳的 Reviewer 人數。最近分配過仍然要選。
+5. reviewer1 與 reviewer2 必須是兩位不同的人，不能重複。
+6. 簡要說明為什麼選擇這些人（含工作量考量）
 
 ## Reviewer 列表
 {reviewer_list_markdown}
@@ -104,7 +108,8 @@ _USER_PROMPT = """\
 ## 近期 Reviewer 工作量統計
 {workload_summary}
 
-請根據以上資訊，選出最適合且近期工作量較低的 2 位 Reviewer。\
+請根據以上資訊，選出最適合且近期工作量較低的 2 位 Reviewer。
+注意：只要該類別有 ≥ 2 位候選人，就必須回傳 2 位不同的 Reviewer，不能因為他們最近分配過就只回傳 1 位。\
 """
 
 
@@ -211,6 +216,12 @@ def _validate_reviewers_exist(result: dict, reviewer_md: str,
                 f"not in reviewers.md (known: {known})"
             )
         result[key] = canonical
+
+    if result.get("reviewer1") and result.get("reviewer2") \
+            and result["reviewer1"].lower() == result["reviewer2"].lower():
+        raise ValueError(
+            f"LLM returned duplicate reviewers (both '{result['reviewer1']}')."
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
