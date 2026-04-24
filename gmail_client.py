@@ -15,12 +15,58 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+import config as config_module
+
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 _MEDIUM_URL_RE = re.compile(r"https?://(?:www\.)?medium\.com/[^\s\"'>]+")
 _REPLY_SUBJECT_RE = re.compile(r"^(Re|Fwd|FW|RE|FWD):\s*", re.IGNORECASE)
+
+DEFAULT_EMAIL_TEMPLATES = {
+    "under_review": (
+        "Hi {author_name},\n\n"
+        "Thank you for submitting your article 《{title}》 "
+        "to the TEM Medium column.\n\n"
+        "Your submission is currently under review. "
+        "We will follow up once the review is complete.\n\n"
+        "Best,\nTEM Editorial Team"
+    ),
+    "acceptance": (
+        "Hi {author_name},\n\n"
+        "Great news — your article 《{title}》 has been accepted "
+        "for publication on the TEM Medium column.\n\n"
+        "It is scheduled to publish on {publish_date} at 9:30 AM (Taiwan time).\n\n"
+        "Please make sure the article draft on Medium is ready before then. "
+        "If you need to make any changes, please do so before the scheduled date.\n\n"
+        "Thank you for your contribution!\n\n"
+        "Best,\nTEM Editorial Team"
+    ),
+    "rejection": (
+        "Hi {author_name},\n\n"
+        "Thank you for submitting your article 《{title}》 "
+        "to the TEM Medium column.\n\n"
+        "After careful review, we are unable to accept this submission at this time.\n"
+        "{reason_block}\n"
+        "We encourage you to revise and resubmit in the future. "
+        "If you have questions, feel free to reach out.\n\n"
+        "Best,\nTEM Editorial Team"
+    ),
+}
+
+
+def _render_template(name: str, default: str, **values) -> str:
+    cfg = config_module.load().get("email_templates") or {}
+    template = cfg.get(name) or default
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError) as e:
+        logger.error(
+            "email_templates.%s has invalid placeholder (%s); falling back to default",
+            name, e,
+        )
+        return default.format(**values)
 
 
 class GmailClient:
@@ -137,40 +183,33 @@ class GmailClient:
     # ── Sending ───────────────────────────────────────────────────────────────
 
     def send_under_review_email(self, sub) -> None:
-        body = (
-            f"Hi {sub['author_name'] or 'there'},\n\n"
-            f"Thank you for submitting your article 《{sub['title']}》 "
-            f"to the TEM Medium column.\n\n"
-            f"Your submission is currently under review. "
-            f"We will follow up once the review is complete.\n\n"
-            f"Best,\nTEM Editorial Team"
+        body = _render_template(
+            "under_review",
+            DEFAULT_EMAIL_TEMPLATES["under_review"],
+            author_name=sub["author_name"] or "there",
+            title=sub["title"],
         )
         self._send_reply(sub, body)
 
     def send_acceptance_email(self, sub, publish_date_str: str) -> None:
-        body = (
-            f"Hi {sub['author_name'] or 'there'},\n\n"
-            f"Great news — your article 《{sub['title']}》 has been accepted "
-            f"for publication on the TEM Medium column.\n\n"
-            f"It is scheduled to publish on {publish_date_str} at 9:30 AM (Taiwan time).\n\n"
-            f"Please make sure the article draft on Medium is ready before then. "
-            f"If you need to make any changes, please do so before the scheduled date.\n\n"
-            f"Thank you for your contribution!\n\n"
-            f"Best,\nTEM Editorial Team"
+        body = _render_template(
+            "acceptance",
+            DEFAULT_EMAIL_TEMPLATES["acceptance"],
+            author_name=sub["author_name"] or "there",
+            title=sub["title"],
+            publish_date=publish_date_str,
         )
         self._send_reply(sub, body)
 
     def send_rejection_email(self, sub, rejection_reason: str) -> None:
         reason_block = f"\n{rejection_reason}\n" if rejection_reason else ""
-        body = (
-            f"Hi {sub['author_name'] or 'there'},\n\n"
-            f"Thank you for submitting your article 《{sub['title']}》 "
-            f"to the TEM Medium column.\n\n"
-            f"After careful review, we are unable to accept this submission at this time.\n"
-            f"{reason_block}\n"
-            f"We encourage you to revise and resubmit in the future. "
-            f"If you have questions, feel free to reach out.\n\n"
-            f"Best,\nTEM Editorial Team"
+        body = _render_template(
+            "rejection",
+            DEFAULT_EMAIL_TEMPLATES["rejection"],
+            author_name=sub["author_name"] or "there",
+            title=sub["title"],
+            rejection_reason=rejection_reason or "",
+            reason_block=reason_block,
         )
         self._send_reply(sub, body)
 

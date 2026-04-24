@@ -11,3 +11,31 @@ workflow:
   publish_timezone: "Asia/Taipei"
 
 reviewers_file: "./reviewers.md"           # Path to reviewer list (use /data/reviewers.md on Railway)
+
+# Optional: customize email bodies sent to submission authors.
+# Omit a key (or the whole section) to use built-in defaults.
+# Placeholders use Python str.format() syntax — any stray { or } must be doubled ({{ }}).
+#   under_review  — sent when reviewers confirm. Vars: {author_name}, {title}
+#   acceptance    — sent when the article is accepted. Vars: {author_name}, {title}, {publish_date}
+#   rejection     — sent when the article is rejected. Vars: {author_name}, {title},
+#                   {rejection_reason} (raw text), {reason_block} (blank or "\n<reason>\n")
+#
+# email_templates:
+#   under_review: |
+#     Hi {author_name},
+#
+#     Thanks for submitting 《{title}》 — it's now under review.
+#
+#     — TEM Editorial Team
+#   acceptance: |
+#     Hi {author_name},
+#
+#     《{title}》 is accepted and scheduled to publish on {publish_date}.
+#
+#     — TEM Editorial Team
+#   rejection: |
+#     Hi {author_name},
+#
+#     After review we can't accept 《{title}》 at this time.
+#     {reason_block}
+#     — TEM Editorial Team
