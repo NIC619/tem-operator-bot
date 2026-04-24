@@ -43,16 +43,6 @@ DEFAULT_EMAIL_TEMPLATES = {
         "Thank you for your contribution!\n\n"
         "Best,\nTEM Editorial Team"
     ),
-    "rejection": (
-        "Hi {author_name},\n\n"
-        "Thank you for submitting your article 《{title}》 "
-        "to the TEM Medium column.\n\n"
-        "After careful review, we are unable to accept this submission at this time.\n"
-        "{reason_block}\n"
-        "We encourage you to revise and resubmit in the future. "
-        "If you have questions, feel free to reach out.\n\n"
-        "Best,\nTEM Editorial Team"
-    ),
 }
 
 
@@ -198,18 +188,6 @@ class GmailClient:
             author_name=sub["author_name"] or "there",
             title=sub["title"],
             publish_date=publish_date_str,
-        )
-        self._send_reply(sub, body)
-
-    def send_rejection_email(self, sub, rejection_reason: str) -> None:
-        reason_block = f"\n{rejection_reason}\n" if rejection_reason else ""
-        body = _render_template(
-            "rejection",
-            DEFAULT_EMAIL_TEMPLATES["rejection"],
-            author_name=sub["author_name"] or "there",
-            title=sub["title"],
-            rejection_reason=rejection_reason or "",
-            reason_block=reason_block,
         )
         self._send_reply(sub, body)
 

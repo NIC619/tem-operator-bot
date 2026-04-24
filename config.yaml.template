@@ -17,8 +17,7 @@ reviewers_file: "./reviewers.md"           # Path to reviewer list (use /data/re
 # Placeholders use Python str.format() syntax — any stray { or } must be doubled ({{ }}).
 #   under_review  — sent when reviewers confirm. Vars: {author_name}, {title}
 #   acceptance    — sent when the article is accepted. Vars: {author_name}, {title}, {publish_date}
-#   rejection     — sent when the article is rejected. Vars: {author_name}, {title},
-#                   {rejection_reason} (raw text), {reason_block} (blank or "\n<reason>\n")
+# Rejections are not emailed — the operator is DM'd to handle author notification manually.
 #
 # email_templates:
 #   under_review: |
@@ -32,10 +31,4 @@ reviewers_file: "./reviewers.md"           # Path to reviewer list (use /data/re
 #
 #     《{title}》 is accepted and scheduled to publish on {publish_date}.
 #
-#     — TEM Editorial Team
-#   rejection: |
-#     Hi {author_name},
-#
-#     After review we can't accept 《{title}》 at this time.
-#     {reason_block}
 #     — TEM Editorial Team

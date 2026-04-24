@@ -607,7 +607,7 @@ async def handle_second(sub_id: int, username: str, bot, config: dict) -> str:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                "✅ Confirm and send rejection email",
+                "✅ Confirm rejection",
                 callback_data=f"confirm_rejection_{sub_id}"
             )
         ]])
@@ -629,8 +629,6 @@ async def handle_second(sub_id: int, username: str, bot, config: dict) -> str:
 
 async def handle_confirm_rejection(sub_id: int, operator_tg_id: int,
                                     bot, config: dict) -> str:
-    from gmail_client import GmailClient
-
     operator_user_id = config["telegram"].get("operator_user_id")
     if operator_user_id and operator_tg_id != operator_user_id:
         return "Only the operator can confirm rejection."
@@ -647,16 +645,20 @@ async def handle_confirm_rejection(sub_id: int, operator_tg_id: int,
     group_chat_id = config["telegram"]["group_chat_id"]
     await bot.send_message(
         chat_id=group_chat_id,
-        text=f"🚫 《{sub['title']}》 has been rejected. Author has been notified.",
+        text=f"🚫 《{sub['title']}》 has been rejected.",
     )
 
-    try:
-        import asyncio
-        gmail = GmailClient()
-        reason = rejection["reason"] if rejection else ""
-        await asyncio.to_thread(gmail.send_rejection_email, dict(sub), reason)
-    except Exception as e:
-        logger.error("Failed to send rejection email: %s", e)
+    reason = rejection["reason"] if rejection else ""
+    await notify_operator(
+        bot,
+        config,
+        (
+            f"🚫 Rejection confirmed for #{sub_id} 《{sub['title']}》.\n"
+            f"Author: {sub['author_name'] or '(unknown)'} <{sub['author_email']}>\n"
+            f"Reason: {reason or '(none)'}\n\n"
+            f"Please notify the author manually if needed."
+        ),
+    )
 
     return "Rejection confirmed."
 

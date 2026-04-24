@@ -1,6 +1,6 @@
 # TEM Review Bot
 
-A Telegram bot that automates the editorial review workflow for the [Taipei Ethereum Meetup (TEM) Medium column](https://medium.com/taipei-ethereum-meetup). It watches a Gmail inbox for article submissions, assigns reviewers via Telegram, follows up periodically, and sends acceptance/rejection emails to authors.
+A Telegram bot that automates the editorial review workflow for the [Taipei Ethereum Meetup (TEM) Medium column](https://medium.com/taipei-ethereum-meetup). It watches a Gmail inbox for article submissions, assigns reviewers via Telegram, follows up periodically, and emails authors when a submission enters review or is accepted. Rejections are surfaced as an operator DM so the operator can follow up with the author manually.
 
 ---
 
@@ -30,6 +30,7 @@ Publish date computed (next weekday)
 Author notified by email → ACCEPTED
 
 At any point: /reject → 2 seconds → operator confirms → REJECTED
+                                   (operator DM'd to notify author manually)
 ```
 
 > If `operator_user_id` is not set in `config.yaml`, the content-request step is skipped and the bot assigns reviewers directly from the email subject and body.
