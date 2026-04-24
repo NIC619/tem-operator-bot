@@ -167,7 +167,7 @@ async def _proceed_with_assignment(sub_id: int, email_data: dict,
     medium_line = f"\n{email_data['medium_url']}" if email_data.get("medium_url") else ""
     reviewers_mention = " ".join(f"@{r}" for r in reviewers)
     announcement = (
-        f"📬 New submission received\n\n"
+        f"📬 New submission received (#{sub_id})\n\n"
         f"《{email_data['title']}》\n"
         f"Author: {email_data.get('author_name', '')} ({email_data['author_email']})"
         f"{medium_line}\n\n"
