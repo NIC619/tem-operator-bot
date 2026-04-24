@@ -14,6 +14,30 @@ import state
 logger = logging.getLogger(__name__)
 
 
+def _resolve_submission(arg: str):
+    """Resolve a CLI arg to (sub, error_message, ambiguous_matches).
+
+    Accepts a numeric sub_id (optionally prefixed with '#') or a title keyword.
+    Returns (sub_dict, None, None) on unique match,
+            (None, error_text, None) when nothing matches,
+            (None, None, matches_list) on keyword ambiguity.
+    """
+    arg = arg.strip().strip('"').strip("'")
+    id_candidate = arg.lstrip("#")
+    if id_candidate.isdigit():
+        sub = db.get_submission_by_id(int(id_candidate))
+        if not sub:
+            return None, f"No submission found with ID #{id_candidate}.", None
+        return sub, None, None
+
+    matches = db.get_submission_by_title_keyword(arg)
+    if not matches:
+        return None, f"No active submission found matching '{arg}'.", None
+    if len(matches) > 1:
+        return None, None, matches
+    return matches[0], None, None
+
+
 # ── /getid ────────────────────────────────────────────────────────────────────
 
 async def cmd_getid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -93,7 +117,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(answer)
 
 
-# ── /reject <keyword> <reason> ────────────────────────────────────────────────
+# ── /reject <sub_id|keyword> <reason> ─────────────────────────────────────────
 
 async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -104,28 +128,24 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Usage: /reject <keyword> <reason>")
+        await update.message.reply_text("Usage: /reject <sub_id|keyword> <reason>")
         return
 
-    keyword = context.args[0]
+    target = context.args[0]
     reason = " ".join(context.args[1:])
 
-    matches = db.get_submission_by_title_keyword(keyword)
-    if not matches:
+    sub, err, ambiguous = _resolve_submission(target)
+    if ambiguous:
+        listing = "\n".join(f"#{s['id']}: 《{s['title']}》" for s in ambiguous)
         await update.message.reply_text(
-            f"No active submission found matching '{keyword}'."
+            f"Multiple submissions match '{target}':\n{listing}\n\n"
+            f"Re-run with a sub_id (e.g. /reject #{ambiguous[0]['id']} <reason>)."
         )
         return
-
-    if len(matches) > 1:
-        listing = "\n".join(f"#{s['id']}: 《{s['title']}》" for s in matches)
-        await update.message.reply_text(
-            f"Multiple submissions match '{keyword}':\n{listing}\n\n"
-            f"Please be more specific."
-        )
+    if err:
+        await update.message.reply_text(err)
         return
 
-    sub = matches[0]
     config = cfg.load()
     await state.handle_rejection_proposal(
         sub_id=sub["id"],
@@ -136,7 +156,7 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
-# ── /second <keyword> ─────────────────────────────────────────────────────────
+# ── /second <sub_id|keyword> ──────────────────────────────────────────────────
 
 async def cmd_second(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -147,27 +167,23 @@ async def cmd_second(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /second <keyword>")
+        await update.message.reply_text("Usage: /second <sub_id|keyword>")
         return
 
-    keyword = " ".join(context.args).strip()
-    matches = db.get_submission_by_title_keyword(keyword)
+    target = " ".join(context.args).strip()
 
-    if not matches:
+    sub, err, ambiguous = _resolve_submission(target)
+    if ambiguous:
+        listing = "\n".join(f"#{s['id']}: 《{s['title']}》" for s in ambiguous)
         await update.message.reply_text(
-            f"No active submission found matching '{keyword}'."
+            f"Multiple submissions match '{target}':\n{listing}\n\n"
+            f"Re-run with a sub_id (e.g. /second #{ambiguous[0]['id']})."
         )
         return
-
-    if len(matches) > 1:
-        listing = "\n".join(f"#{s['id']}: 《{s['title']}》" for s in matches)
-        await update.message.reply_text(
-            f"Multiple submissions match '{keyword}':\n{listing}\n\n"
-            f"Please be more specific."
-        )
+    if err:
+        await update.message.reply_text(err)
         return
 
-    sub = matches[0]
     config = cfg.load()
     answer = await state.handle_second(
         sub_id=sub["id"],

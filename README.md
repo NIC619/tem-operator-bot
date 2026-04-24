@@ -143,8 +143,8 @@ pm2 startup
 | `/getid` | Anyone | Shows current chat ID and your user ID |
 | `/status` | Anyone | Lists all active submissions and their state |
 | `/done <keyword>` | Reviewer | Marks your review as done (e.g. `/done fusaka`) |
-| `/reject <keyword> <reason>` | Anyone | Proposes rejecting a submission |
-| `/second <keyword>` | Anyone | Seconds a rejection proposal (2 needed) |
+| `/reject <sub_id\|keyword> <reason>` | Anyone | Proposes rejecting a submission |
+| `/second <sub_id\|keyword>` | Anyone | Seconds a rejection proposal (2 needed) |
 | `/override <sub_id> @user1 [@user2]` | Operator | Manually assigns reviewers |
 | `/content <sub_id> <text>` | Operator | Appends article draft text to the buffer (may be called multiple times for long articles) |
 | `/content_done <sub_id>` | Operator | Finalizes buffered content and triggers reviewer assignment |

@@ -86,8 +86,8 @@ PUBLIC_COMMANDS = [
     BotCommand("getid", "Show this chat's ID and your user ID"),
     BotCommand("status", "List active submissions and their state"),
     BotCommand("done", "Mark your review as done: /done <keyword>"),
-    BotCommand("reject", "Propose rejecting: /reject <keyword> <reason>"),
-    BotCommand("second", "Second a rejection: /second <keyword>"),
+    BotCommand("reject", "Propose rejecting: /reject <sub_id|keyword> <reason>"),
+    BotCommand("second", "Second a rejection: /second <sub_id|keyword>"),
     BotCommand("override", "Operator: reassign reviewers /override <sub_id> @user1 [@user2]"),
 ]
 
