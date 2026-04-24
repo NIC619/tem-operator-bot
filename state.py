@@ -554,14 +554,13 @@ async def handle_rejection_proposal(sub_id: int, proposed_by: str,
         f"Reason: {reason}\nWaiting for 2 seconds."
     )
 
-    title_keyword = sub["title"].split()[0].lower() if sub["title"] else str(sub_id)
     msg = await bot.send_message(
         chat_id=group_chat_id,
         text=(
-            f"🚫 @{proposed_by} has proposed rejecting 《{sub['title']}》\n\n"
+            f"🚫 @{proposed_by} has proposed rejecting #{sub_id} 《{sub['title']}》\n\n"
             f"Reason: {reason}\n\n"
-            f"Two more people need to second this. "
-            f"Type /second {title_keyword} to agree.\n"
+            f"Two more people need to agree. "
+            f"Reply with `/second {sub_id}` to second this proposal.\n"
             f"(0/2 seconds so far)"
         ),
     )
