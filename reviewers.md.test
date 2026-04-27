@@ -1,0 +1,23 @@
+# TEM Reviewer List
+
+## Categories & Descriptions
+
+### Layer 2 & Rollups
+Optimistic rollups (OP Stack, Arbitrum), ZK-rollups, rollup architecture, sequencers, provers, bridges, data availability, blob transactions (EIP-4844), L2 fee mechanisms, cross-chain messaging, rollup derivation pipelines, fraud proofs, validity proofs, L2 interoperability.
+
+**Reviewers:** nic619, hugebing, mhchia
+
+### Developer Tools & Frameworks
+Foundry (Forge, Cast, Anvil, Chisel), Hardhat, Remix, development frameworks, testing tools, gas profiling & optimization, fuzzing, formal verification, deployment pipelines, contract debugging, dev environment setup, CI/CD for smart contracts, ABI encoding/decoding, EVM tooling.
+
+**Reviewers:** nic619, hugebing, mhchia
+
+### Ethereum Protocol & Consensus (ETH 2.0)
+Proof-of-Stake, beacon chain, validators, staking, slashing, MEV (PBS, MEV-Boost, block building), EIPs & protocol upgrades (Dencun, Pectra, Verkle trees), execution layer, consensus layer, light clients, SSZ, Ethereum roadmap (The Merge, The Surge, The Scourge, The Verge, The Purge, The Splurge), account abstraction (ERC-4337).
+
+**Reviewers:** nic619, hugebing, mhchia
+
+### General / Cross-cutting
+Articles that span multiple topics, introductory/educational content, ecosystem overviews, event recaps, opinion pieces, blockchain fundamentals, Web3 culture, Ethereum community.
+
+**Reviewers:** nic619, hugebing, mhchia

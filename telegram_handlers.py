@@ -74,7 +74,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("\n".join(lines))
 
 
-# ── /done <keyword> ───────────────────────────────────────────────────────────
+# ── /done <sub_id|keyword> ────────────────────────────────────────────────────
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -85,27 +85,23 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /done <keyword>")
+        await update.message.reply_text("Usage: /done <sub_id|keyword>")
         return
 
-    keyword = " ".join(context.args).strip().strip('"').strip("'")
-    matches = db.get_submission_by_title_keyword(keyword)
+    target = " ".join(context.args).strip().strip('"').strip("'")
 
-    if not matches:
+    sub, err, ambiguous = _resolve_submission(target)
+    if ambiguous:
+        listing = "\n".join(f"#{s['id']}: 《{s['title']}》" for s in ambiguous)
         await update.message.reply_text(
-            f"No active submission found matching '{keyword}'."
+            f"Multiple submissions match '{target}':\n{listing}\n\n"
+            f"Re-run with a sub_id (e.g. /done #{ambiguous[0]['id']})."
         )
         return
-
-    if len(matches) > 1:
-        listing = "\n".join(f"#{s['id']}: 《{s['title']}》" for s in matches)
-        await update.message.reply_text(
-            f"Multiple submissions match '{keyword}':\n{listing}\n\n"
-            f"Please be more specific."
-        )
+    if err:
+        await update.message.reply_text(err)
         return
 
-    sub = matches[0]
     config = cfg.load()
     answer = await state.handle_reviewer_done(
         sub_id=sub["id"],
