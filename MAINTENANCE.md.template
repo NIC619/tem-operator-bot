@@ -1,0 +1,171 @@
+# Maintenance Guide — Railway Deployment
+
+Operator runbook for updating config files on the live Railway-deployed instance
+without redeploying the repo. Copy this file to `MAINTENANCE.md` (gitignored)
+and fill in deployment-specific values for your instance.
+
+## Deployment-Specific Values
+
+| Item | Value |
+| --- | --- |
+| Railway project name | `<fill-in>` |
+| Railway service name | `<fill-in>` |
+| Railway environment | `<fill-in, e.g. production>` |
+| Volume mount path | `/data` |
+| `CONFIG_PATH` env var | `/data/config.yaml` |
+| `DB_PATH` env var | `/data/tem_bot.db` |
+| `GMAIL_CREDENTIALS_JSON_PATH` | `/data/credentials.json` |
+| `GMAIL_TOKEN_PATH` | `/data/gmail_token.json` |
+| Reviewers file path on volume | `/data/reviewers.md` |
+
+> Replace `/data` below with whatever your volume mount path is.
+
+## Why config files live on a volume
+
+Railway containers have an **ephemeral filesystem** — anything written at runtime
+is wiped on the next deploy/restart. To edit `config.yaml`, `reviewers.md`, etc.
+out-of-band (without a redeploy), they must live on a mounted Railway Volume,
+and the bot must be pointed at those paths via env vars (e.g. `CONFIG_PATH`).
+
+The repo-bundled `config.yaml` / `reviewers.md` are only used in local dev.
+
+## Updating a file on the volume — the base64 + railway ssh pattern
+
+`scp` and `rsync` do **not** work against `railway ssh` (it's a proxy, not a
+real `sshd`). Piping `cat file | railway ssh "cat > ..."` also tends to hang
+because stdin isn't reliably forwarded. The pattern that works:
+
+```bash
+B64=$(base64 < <LOCAL_FILE>)
+railway ssh "echo '$B64' | base64 -d > <REMOTE_PATH>"
+```
+
+Then verify:
+
+```bash
+railway ssh "cat <REMOTE_PATH>"
+```
+
+After uploading, **restart the service** so the bot reloads the file
+(`config.yaml` and `reviewers.md` are read at startup):
+
+```bash
+railway redeploy
+# or restart from the Railway dashboard
+```
+
+If you have multiple services in the project, scope the command:
+
+```bash
+railway ssh --service <service-name> "..."
+```
+
+## Concrete recipes
+
+### Update `reviewers.md`
+
+```bash
+B64=$(base64 < reviewers.md)
+railway ssh "echo '$B64' | base64 -d > /data/reviewers.md"
+railway ssh "cat /data/reviewers.md"   # verify
+railway redeploy                        # bot reloads on startup
+```
+
+### Update `config.yaml`
+
+```bash
+B64=$(base64 < config.yaml)
+railway ssh "echo '$B64' | base64 -d > /data/config.yaml"
+railway ssh "cat /data/config.yaml"
+railway redeploy
+```
+
+Make sure `CONFIG_PATH=/data/config.yaml` is set in Railway variables, otherwise
+the bot will fall back to the repo copy (`./config.yaml`) and ignore your edit.
+
+### Update Gmail OAuth files (`credentials.json`, `gmail_token.json`)
+
+Same pattern — these are also pointed at via env vars
+(`GMAIL_CREDENTIALS_JSON_PATH`, `GMAIL_TOKEN_PATH`):
+
+```bash
+B64=$(base64 < credentials.json)
+railway ssh "echo '$B64' | base64 -d > /data/credentials.json"
+
+B64=$(base64 < gmail_token.json)
+railway ssh "echo '$B64' | base64 -d > /data/gmail_token.json"
+```
+
+Note: OAuth refresh happens in-place inside the container and writes back to
+`GMAIL_TOKEN_PATH`. Because that path is on the volume, refreshed tokens
+survive restarts. Only re-upload `gmail_token.json` if the refresh token has
+been revoked or you re-authorized locally.
+
+### Update environment variables (no file upload needed)
+
+Many `config.yaml` values are overridable directly via env vars (see
+`config.py` `_ENV_OVERRIDES`). For these, prefer setting the env var over
+editing the YAML on the volume — no ssh needed:
+
+```bash
+railway variables --set GMAIL_POLL_INTERVAL_SECONDS=120
+railway variables --set WORKFLOW_FOLLOWUP_INTERVAL_DAYS=14
+```
+
+Env vars currently supported as overrides:
+- `TELEGRAM_GROUP_CHAT_ID`
+- `TELEGRAM_OPERATOR_USER_ID`
+- `TELEGRAM_POLL_INTERVAL_SECONDS`
+- `GMAIL_POLL_INTERVAL_SECONDS`
+- `WORKFLOW_FOLLOWUP_INTERVAL_DAYS`
+
+Setting a Railway variable triggers a redeploy automatically.
+
+## Recommended production tunables
+
+| Variable | Production value | Notes |
+| --- | --- | --- |
+| `GMAIL_POLL_INTERVAL_SECONDS` | `60`–`120` | Responsive enough for editorial workflow, well under Gmail API quota. |
+| `TELEGRAM_POLL_INTERVAL_SECONDS` | `1` (or unused) | python-telegram-bot v21 long-polls internally; this knob barely matters. |
+| `WORKFLOW_FOLLOWUP_INTERVAL_DAYS` | `14` | Editorial cadence. Use small decimals (e.g. `0.01`) only for testing. |
+| `HEADLESS` | `1` | Refuses OAuth browser flow on the server. Always on in prod. |
+
+## Inspecting the live instance
+
+```bash
+railway ssh "ls -la /data"             # what's on the volume
+railway ssh "cat /data/config.yaml"    # current live config
+railway logs                            # tail logs
+railway variables                       # list env vars
+```
+
+## First-time deployment checklist
+
+1. Create Railway project + service, link the GitHub repo.
+2. Attach a Volume; note its mount path (assumed `/data` in this doc).
+3. Set Railway variables:
+   - Secrets: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`
+   - Path overrides: `CONFIG_PATH=/data/config.yaml`,
+     `DB_PATH=/data/tem_bot.db`,
+     `GMAIL_CREDENTIALS_JSON_PATH=/data/credentials.json`,
+     `GMAIL_TOKEN_PATH=/data/gmail_token.json`
+   - `HEADLESS=1`
+   - Tunables (see table above)
+4. Generate `gmail_token.json` locally via the OAuth flow.
+5. Upload `config.yaml`, `reviewers.md`, `credentials.json`, `gmail_token.json`
+   to `/data` using the base64 + `railway ssh` recipe above.
+6. Run `/getid` in the Telegram group to obtain `group_chat_id` and
+   `operator_user_id`; set them as Railway variables.
+7. Redeploy. Tail logs to confirm clean startup.
+
+## Troubleshooting
+
+- **`railway ssh` hangs with piped stdin** — expected; use base64 round-trip.
+- **Edits to `config.yaml` / `reviewers.md` have no effect** — confirm
+  `CONFIG_PATH` (and the reviewers path) point to `/data/...` and the service
+  was restarted after upload.
+- **Bot can't find Gmail creds** — check
+  `railway ssh "ls -la /data"` and that `GMAIL_CREDENTIALS_JSON_PATH` /
+  `GMAIL_TOKEN_PATH` env vars match the actual filenames on the volume.
+- **Database disappeared after redeploy** — `DB_PATH` is not pointing at the
+  volume. Set `DB_PATH=/data/tem_bot.db` and restore from backup.
