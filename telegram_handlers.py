@@ -569,6 +569,54 @@ async def cmd_omit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# ── /delete <sub_id> ──────────────────────────────────────────────────────────
+
+async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Operator escape hatch: hard-delete a submission and every dependent row.
+
+    Used to redo the review process from scratch when something has gone
+    wrong. The bot will re-ingest the email on the next Gmail poll because
+    the watermark is rewound past the deleted submission's created_at.
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /delete.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /delete <sub_id>")
+        return
+
+    try:
+        sub_id = int(context.args[0].lstrip("#"))
+    except ValueError:
+        await update.message.reply_text("sub_id must be a number.")
+        return
+
+    sub = db.get_submission_by_id(sub_id)
+    if not sub:
+        await update.message.reply_text(f"Submission #{sub_id} not found.")
+        return
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🗑 Confirm delete", callback_data=f"confirm_delete_{sub_id}"
+        )
+    ]])
+    await update.message.reply_text(
+        f"⚠️ This will permanently delete submission #{sub_id} 《{sub['title']}》 "
+        f"and all related assignments, follow-ups, rejections, and history.\n\n"
+        f"The next Gmail poll will re-ingest the email and start the review "
+        f"process over from scratch.",
+        reply_markup=keyboard,
+    )
+
+
 # ── Button: accept_<sub_id>_<username> ───────────────────────────────────────
 
 async def cb_accept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -693,3 +741,72 @@ async def cb_confirm_rejection(update: Update, context: ContextTypes.DEFAULT_TYP
         bot=context.bot,
         config=config,
     )
+
+
+# ── Button: confirm_delete_<sub_id> ──────────────────────────────────────────
+
+async def cb_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from datetime import datetime, timezone
+
+    query = update.callback_query
+    parts = query.data.split("_")
+    if len(parts) < 3:
+        await query.answer()
+        return
+
+    try:
+        sub_id = int(parts[-1])
+    except ValueError:
+        await query.answer()
+        return
+
+    user = query.from_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+    if operator_user_id and user.id != operator_user_id:
+        await query.answer("Only the operator can confirm deletion.", show_alert=True)
+        return
+
+    sub = db.get_submission_by_id(sub_id)
+    if not sub:
+        await query.answer("Already deleted.", show_alert=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    title = sub["title"]
+
+    # Rewind the Gmail watermark so the next poll re-ingests this email.
+    created_at = sub["created_at"]
+    if created_at:
+        try:
+            dt = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+            target_ts = dt.timestamp() - 60  # 1 minute buffer
+            current = db.get_state("last_gmail_checked_ts")
+            if current is None or float(current) > target_ts:
+                db.set_state("last_gmail_checked_ts", str(target_ts))
+        except ValueError:
+            logger.warning("Could not parse created_at=%r for sub #%d", created_at, sub_id)
+
+    db.delete_submission(sub_id)
+
+    await query.answer("🗑 Deleted.")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    group_chat_id = config["telegram"].get("group_chat_id")
+    if group_chat_id:
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text=(
+                f"🗑 Submission #{sub_id} 《{title}》 has been removed by the "
+                f"operator. It will be processed and the review will start "
+                f"over from the beginning."
+            ),
+        )

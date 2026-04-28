@@ -28,6 +28,7 @@ from telegram_handlers import (
     cmd_content_done,
     cmd_skip,
     cmd_omit,
+    cmd_delete,
     cmd_reviewers,
     cmd_add_reviewer,
     cmd_remove_reviewer,
@@ -36,6 +37,7 @@ from telegram_handlers import (
     cb_decline,
     cb_done,
     cb_confirm_rejection,
+    cb_confirm_delete,
 )
 
 load_dotenv()
@@ -175,6 +177,7 @@ def main() -> None:
     app.add_handler(CommandHandler("content_done", cmd_content_done))
     app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(CommandHandler("omit", cmd_omit))
+    app.add_handler(CommandHandler("delete", cmd_delete))
     app.add_handler(CommandHandler("reviewers", cmd_reviewers))
     app.add_handler(CommandHandler("add_reviewer", cmd_add_reviewer))
     app.add_handler(CommandHandler("remove_reviewer", cmd_remove_reviewer))
@@ -185,6 +188,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_decline, pattern=r"^decline_"))
     app.add_handler(CallbackQueryHandler(cb_done, pattern=r"^done_"))
     app.add_handler(CallbackQueryHandler(cb_confirm_rejection, pattern=r"^confirm_rejection_"))
+    app.add_handler(CallbackQueryHandler(cb_confirm_delete, pattern=r"^confirm_delete_"))
     app.add_error_handler(error_handler)
 
     tg_poll_interval = cfg.load()["telegram"].get("poll_interval_seconds", 30)

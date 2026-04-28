@@ -191,6 +191,26 @@ def set_submission_rejected(sub_id: int):
         )
 
 
+def delete_submission(sub_id: int) -> bool:
+    """Hard delete a submission and every dependent row.
+
+    Returns True if a submission row existed and was removed.
+    """
+    with get_conn() as conn:
+        existed = conn.execute(
+            "SELECT 1 FROM submissions WHERE id = ?", (sub_id,)
+        ).fetchone() is not None
+        if not existed:
+            return False
+        conn.execute("DELETE FROM rejections WHERE submission_id = ?", (sub_id,))
+        conn.execute("DELETE FROM followups WHERE submission_id = ?", (sub_id,))
+        conn.execute("DELETE FROM assignments WHERE submission_id = ?", (sub_id,))
+        conn.execute("DELETE FROM assignment_history WHERE submission_id = ?", (sub_id,))
+        conn.execute("DELETE FROM content_requests WHERE submission_id = ?", (sub_id,))
+        conn.execute("DELETE FROM submissions WHERE id = ?", (sub_id,))
+        return True
+
+
 def set_tg_status_message_id(sub_id: int, message_id: int):
     with get_conn() as conn:
         conn.execute(
