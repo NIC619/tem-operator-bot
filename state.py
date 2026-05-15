@@ -29,6 +29,16 @@ async def notify_operator(bot, config: dict, text: str) -> None:
         logger.warning("Failed to notify operator: %s", e)
 
 
+# ── Follow-up scheduling helpers ─────────────────────────────────────────────
+
+def _schedule_acceptance_followup(sub_id: int, config: dict) -> None:
+    """Replace any unsent acceptance follow-up for this submission with a fresh one."""
+    hours = config["workflow"].get("acceptance_followup_interval_hours", 24)
+    db.clear_unsent_followups(sub_id, kind="acceptance")
+    next_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+    db.insert_followup(sub_id, next_at, kind="acceptance")
+
+
 # ── Publish Date ─────────────────────────────────────────────────────────────
 
 def compute_publish_date(timezone_str: str = "Asia/Taipei",
@@ -160,6 +170,7 @@ async def _proceed_with_assignment(sub_id: int, email_data: dict,
     for r in reviewers:
         db.insert_assignment(sub_id, r)
     db.update_submission_status(sub_id, "assigning")
+    _schedule_acceptance_followup(sub_id, config)
 
     group_chat_id = config["telegram"]["group_chat_id"]
 
@@ -326,6 +337,7 @@ async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
         if not new_reviewer or new_reviewer.lower() in [e.lower() for e in excluded]:
             raise ValueError(f"LLM returned excluded or empty reviewer: '{new_reviewer}'")
         db.insert_assignment(sub_id, new_reviewer)
+        _schedule_acceptance_followup(sub_id, config)
 
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = InlineKeyboardMarkup([[
@@ -389,6 +401,7 @@ async def _transition_to_under_review(sub_id: int, bot, config: dict) -> None:
     reviewers = [a["reviewer_tg_username"] for a in confirmed]
 
     db.update_submission_status(sub_id, "under_review")
+    db.clear_unsent_followups(sub_id, kind="acceptance")
 
     await notify_operator(
         bot, config,
@@ -698,6 +711,11 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
 
     db.update_submission_status(sub_id, "assigning")
 
+    if added:
+        _schedule_acceptance_followup(sub_id, config)
+    else:
+        db.clear_unsent_followups(sub_id, kind="acceptance")
+
     group_chat_id = config["telegram"]["group_chat_id"]
 
     if not added:
@@ -748,14 +766,83 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
 
 async def send_followup(followup_row, bot, config: dict) -> None:
     sub_id = followup_row["submission_id"]
+    kind = followup_row["kind"] if "kind" in followup_row.keys() else "review"
     sub = db.get_submission_by_id(sub_id)
-    if not sub or sub["status"] != "under_review":
+    if not sub:
+        return
+
+    if kind == "acceptance":
+        await _send_acceptance_followup(followup_row, sub, bot, config)
+    else:
+        await _send_review_followup(followup_row, sub, bot, config)
+
+
+async def _send_acceptance_followup(followup_row, sub, bot, config: dict) -> None:
+    sub_id = sub["id"]
+    if sub["status"] != "assigning":
+        db.mark_followup_sent(followup_row["id"])
+        return
+
+    all_assignments = db.get_assignments_for_submission(sub_id)
+    still_pending = [a for a in all_assignments if a["status"] == "pending"]
+
+    if not still_pending:
+        db.mark_followup_sent(followup_row["id"])
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"✅ @{a['reviewer_tg_username']} — Yes",
+                callback_data=f"accept_{sub_id}_{a['reviewer_tg_username']}"
+            ),
+            InlineKeyboardButton(
+                f"❌ @{a['reviewer_tg_username']} — Can't",
+                callback_data=f"decline_{sub_id}_{a['reviewer_tg_username']}"
+            ),
+        ]
+        for a in still_pending
+    ]
+    keyboard = InlineKeyboardMarkup(rows)
+
+    reviewers_mention = " ".join(
+        f"@{a['reviewer_tg_username']}" for a in still_pending
+    )
+    group_chat_id = config["telegram"]["group_chat_id"]
+    await bot.send_message(
+        chat_id=group_chat_id,
+        text=(
+            f"⏰ Still waiting on a response for 《{sub['title']}》\n\n"
+            f"{reviewers_mention} — are you available to review?"
+        ),
+        reply_markup=keyboard,
+    )
+
+    db.mark_followup_sent(followup_row["id"])
+
+    await notify_operator(
+        bot, config,
+        f"⏰ Acceptance reminder sent for #{sub_id} 《{sub['title']}》 "
+        f"to {reviewers_mention}."
+    )
+
+    hours = config["workflow"].get("acceptance_followup_interval_hours", 24)
+    next_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+    db.insert_followup(sub_id, next_at, kind="acceptance")
+
+
+async def _send_review_followup(followup_row, sub, bot, config: dict) -> None:
+    sub_id = sub["id"]
+    if sub["status"] != "under_review":
+        db.mark_followup_sent(followup_row["id"])
         return
 
     all_assignments = db.get_assignments_for_submission(sub_id)
     pending = [a for a in all_assignments if a["status"] == "confirmed"]
 
     if not pending:
+        db.mark_followup_sent(followup_row["id"])
         return
 
     reviewers = [a["reviewer_tg_username"] for a in pending]
@@ -791,4 +878,4 @@ async def send_followup(followup_row, bot, config: dict) -> None:
 
     followup_days = config["workflow"]["followup_interval_days"]
     next_followup = datetime.now(timezone.utc) + timedelta(days=followup_days)
-    db.insert_followup(sub_id, next_followup)
+    db.insert_followup(sub_id, next_followup, kind="review")

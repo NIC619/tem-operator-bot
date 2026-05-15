@@ -67,6 +67,7 @@ def init_db():
                 submission_id INTEGER NOT NULL REFERENCES submissions(id),
                 scheduled_at TIMESTAMP NOT NULL,
                 sent_at TIMESTAMP,
+                kind TEXT NOT NULL DEFAULT 'review',
                 FOREIGN KEY (submission_id) REFERENCES submissions(id)
             );
 
@@ -113,6 +114,14 @@ def init_db():
             conn.execute(
                 "ALTER TABLE content_requests ADD COLUMN "
                 "article_content TEXT NOT NULL DEFAULT ''"
+            )
+
+        # Additive migration: add kind column to existing followups tables.
+        fu_cols = {row[1] for row in conn.execute("PRAGMA table_info(followups)")}
+        if "kind" not in fu_cols:
+            conn.execute(
+                "ALTER TABLE followups ADD COLUMN "
+                "kind TEXT NOT NULL DEFAULT 'review'"
             )
 
 
@@ -331,11 +340,13 @@ def clear_pending_assignments(submission_id: int):
 
 # ── Follow-ups ───────────────────────────────────────────────────────────────
 
-def insert_followup(submission_id: int, scheduled_at: datetime):
+def insert_followup(submission_id: int, scheduled_at: datetime,
+                    kind: str = "review"):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO followups (submission_id, scheduled_at) VALUES (?, ?)",
-            (submission_id, scheduled_at.isoformat())
+            "INSERT INTO followups (submission_id, scheduled_at, kind) "
+            "VALUES (?, ?, ?)",
+            (submission_id, scheduled_at.isoformat(), kind)
         )
 
 
@@ -345,7 +356,7 @@ def get_pending_followups(now: datetime):
             """SELECT f.*, s.title, s.status FROM followups f
                JOIN submissions s ON s.id = f.submission_id
                WHERE f.scheduled_at <= ? AND f.sent_at IS NULL
-               AND s.status IN ('under_review')""",
+               AND s.status IN ('assigning', 'under_review')""",
             (now.isoformat(),)
         ).fetchall()
 
@@ -356,6 +367,22 @@ def mark_followup_sent(followup_id: int):
             "UPDATE followups SET sent_at = CURRENT_TIMESTAMP WHERE id = ?",
             (followup_id,)
         )
+
+
+def clear_unsent_followups(submission_id: int, kind: str | None = None):
+    """Delete unsent follow-ups for a submission, optionally filtered by kind."""
+    with get_conn() as conn:
+        if kind is None:
+            conn.execute(
+                "DELETE FROM followups WHERE submission_id = ? AND sent_at IS NULL",
+                (submission_id,)
+            )
+        else:
+            conn.execute(
+                "DELETE FROM followups WHERE submission_id = ? "
+                "AND sent_at IS NULL AND kind = ?",
+                (submission_id, kind)
+            )
 
 
 # ── Assignment History ───────────────────────────────────────────────────────

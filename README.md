@@ -20,6 +20,7 @@ Bot DMs operator: "paste the draft content or /skip"
 LLM picks 1–2 reviewers (using content if provided)
 Bot posts in Telegram group → inline buttons [✅ Yes] [❌ Can't]
         │
+        ▼  (reviewers stay silent → re-pinged every 24h until they respond)
         ▼  (all reviewers confirm)
 Status → Under Review
 Author notified by email
@@ -89,6 +90,7 @@ gmail:
 
 workflow:
   followup_interval_days: 14
+  acceptance_followup_interval_hours: 24   # re-ping reviewers who haven't tapped accept/decline
   publish_time: "09:30"
   publish_timezone: "Asia/Taipei"
 ```
@@ -199,7 +201,7 @@ SQLite (`tem_bot.db`), 6 tables:
 |-------|---------|
 | `submissions` | One row per email submission |
 | `assignments` | Reviewer assignments per submission |
-| `followups` | Scheduled follow-up messages |
+| `followups` | Scheduled follow-up messages (`kind`: `acceptance` or `review`) |
 | `assignment_history` | 90-day history for LLM workload balancing |
 | `rejections` | Rejection proposals + seconds |
 | `bot_state` | Persistent key-value store (e.g. last Gmail poll timestamp) |

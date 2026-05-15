@@ -21,6 +21,8 @@ _ENV_OVERRIDES = [
     ("TELEGRAM_POLL_INTERVAL_SECONDS", ("telegram", "poll_interval_seconds"), int),
     ("GMAIL_POLL_INTERVAL_SECONDS",   ("gmail", "poll_interval_seconds"),   int),
     ("WORKFLOW_FOLLOWUP_INTERVAL_DAYS", ("workflow", "followup_interval_days"), float),
+    ("WORKFLOW_ACCEPTANCE_FOLLOWUP_INTERVAL_HOURS",
+     ("workflow", "acceptance_followup_interval_hours"), float),
 ]
 
 
