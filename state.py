@@ -709,12 +709,22 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
         db.insert_assignment(sub_id, username)
         added.append(username)
 
-    db.update_submission_status(sub_id, "assigning")
+    # Re-evaluate status based on what actually remains after clear+insert.
+    remaining = db.get_assignments_for_submission(sub_id)
+    has_pending = any(a["status"] == "pending" for a in remaining)
+    has_confirmed = any(a["status"] == "confirmed" for a in remaining)
 
-    if added:
+    if has_pending:
+        db.update_submission_status(sub_id, "assigning")
         _schedule_acceptance_followup(sub_id, config)
     else:
         db.clear_unsent_followups(sub_id, kind="acceptance")
+        if has_confirmed:
+            # No pending left and at least one confirmed reviewer — proceed.
+            await _transition_to_under_review(sub_id, bot, config)
+        else:
+            # No assignments at all — leave in 'assigning' and warn operator.
+            db.update_submission_status(sub_id, "assigning")
 
     group_chat_id = config["telegram"]["group_chat_id"]
 
@@ -725,6 +735,10 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
                 f" Already assigned: "
                 f"{', '.join(f'@{u}' for u in skipped_existing)}."
             )
+        if not remaining:
+            note += " ⚠️ No reviewers remain — assign someone with /override."
+        elif has_confirmed and not has_pending:
+            note += " All remaining reviewers already confirmed — transitioned to under_review."
         return f"Override: nothing to add.{note}"
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -760,6 +774,61 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
             f"{', '.join(f'@{u}' for u in skipped_existing)})"
         )
     return msg
+
+
+# ── Drop a pending reviewer ──────────────────────────────────────────────────
+
+async def handle_drop(sub_id: int, username: str, bot, config: dict) -> str:
+    """Operator removes a single pending reviewer without naming a replacement."""
+    sub = db.get_submission_by_id(sub_id)
+    if not sub:
+        return f"Submission #{sub_id} not found."
+
+    if sub["status"] not in ("assigning", "under_review"):
+        return (
+            f"#{sub_id} is in status '{sub['status']}' — /drop only works "
+            f"while assigning or under review."
+        )
+
+    existing = db.get_assignment(sub_id, username)
+    if not existing:
+        return f"@{username} is not assigned to #{sub_id}."
+    if existing["status"] != "pending":
+        return (
+            f"@{username} is in status '{existing['status']}' on #{sub_id}; "
+            f"/drop only removes pending reviewers. Use /override to replace "
+            f"a confirmed reviewer."
+        )
+
+    deleted = db.delete_pending_assignment(sub_id, username)
+    if not deleted:
+        return f"Failed to drop @{username} from #{sub_id}."
+
+    remaining = db.get_assignments_for_submission(sub_id)
+    has_pending = any(a["status"] == "pending" for a in remaining)
+    has_confirmed = any(a["status"] == "confirmed" for a in remaining)
+
+    group_chat_id = config["telegram"]["group_chat_id"]
+    await bot.send_message(
+        chat_id=group_chat_id,
+        text=f"🗑️ @{username} dropped from review of 《{sub['title']}》.",
+    )
+
+    if not has_pending:
+        db.clear_unsent_followups(sub_id, kind="acceptance")
+        if has_confirmed and sub["status"] == "assigning":
+            await _transition_to_under_review(sub_id, bot, config)
+            return (
+                f"Dropped @{username}. All remaining reviewers already "
+                f"confirmed — moved to under_review."
+            )
+        if not remaining:
+            return (
+                f"Dropped @{username}. ⚠️ No reviewers remain — "
+                f"assign someone with /override {sub_id} @user1 [@user2]."
+            )
+
+    return f"Dropped @{username} from #{sub_id}."
 
 
 # ── Follow-up ─────────────────────────────────────────────────────────────────

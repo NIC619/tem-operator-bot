@@ -24,6 +24,7 @@ from telegram_handlers import (
     cmd_reject,
     cmd_second,
     cmd_override,
+    cmd_drop,
     cmd_content,
     cmd_content_done,
     cmd_skip,
@@ -91,6 +92,7 @@ PUBLIC_COMMANDS = [
     BotCommand("reject", "Propose rejecting: /reject <sub_id|keyword> <reason>"),
     BotCommand("second", "Second a rejection: /second <sub_id|keyword>"),
     BotCommand("override", "Operator: reassign reviewers /override <sub_id> @user1 [@user2]"),
+    BotCommand("drop", "Operator: drop a pending reviewer /drop <sub_id> @user"),
 ]
 
 OPERATOR_COMMANDS = PUBLIC_COMMANDS + [
@@ -173,6 +175,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("second", cmd_second))
     app.add_handler(CommandHandler("override", cmd_override))
+    app.add_handler(CommandHandler("drop", cmd_drop))
     app.add_handler(CommandHandler("content", cmd_content))
     app.add_handler(CommandHandler("content_done", cmd_content_done))
     app.add_handler(CommandHandler("skip", cmd_skip))

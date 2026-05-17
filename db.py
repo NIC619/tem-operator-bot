@@ -328,6 +328,23 @@ def mark_assignment_done(submission_id: int, reviewer_tg_username: str,
             )
 
 
+def delete_pending_assignment(submission_id: int, reviewer_tg_username: str) -> bool:
+    """Delete a single assignment row only if it's still in 'pending' status.
+
+    Returns True if a row was deleted, False otherwise (not found or already
+    confirmed/done/declined).
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            """DELETE FROM assignments
+               WHERE submission_id = ?
+                 AND lower(reviewer_tg_username) = lower(?)
+                 AND status = 'pending'""",
+            (submission_id, reviewer_tg_username)
+        )
+        return cur.rowcount > 0
+
+
 def clear_pending_assignments(submission_id: int):
     """Remove pending/declined assignments for operator override."""
     with get_conn() as conn:

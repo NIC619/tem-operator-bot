@@ -225,6 +225,41 @@ async def cmd_override(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(answer)
 
 
+# ── /drop <sub_id> @user ─────────────────────────────────────────────────────
+
+async def cmd_drop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    config = cfg.load()
+    operator_user_id = config["telegram"].get("operator_user_id")
+
+    if operator_user_id and (not user or user.id != operator_user_id):
+        await update.message.reply_text("Only the operator can use /drop.")
+        return
+
+    if not context.args or len(context.args) != 2:
+        await update.message.reply_text("Usage: /drop <sub_id> @user")
+        return
+
+    try:
+        sub_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("sub_id must be a number.")
+        return
+
+    username = context.args[1].lstrip("@").strip()
+    if not username:
+        await update.message.reply_text("Username is required.")
+        return
+
+    answer = await state.handle_drop(
+        sub_id=sub_id,
+        username=username,
+        bot=context.bot,
+        config=config,
+    )
+    await update.message.reply_text(answer)
+
+
 # ── /reviewers ────────────────────────────────────────────────────────────────
 
 async def cmd_reviewers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

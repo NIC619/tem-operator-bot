@@ -147,7 +147,8 @@ pm2 startup
 | `/done <keyword>` | Reviewer | Marks your review as done (e.g. `/done fusaka`) |
 | `/reject <sub_id\|keyword> <reason>` | Anyone | Proposes rejecting a submission |
 | `/second <sub_id\|keyword>` | Anyone | Seconds a rejection proposal (2 needed) |
-| `/override <sub_id> @user1 [@user2]` | Operator | Manually assigns reviewers |
+| `/override <sub_id> @user1 [@user2]` | Operator | Manually assigns reviewers (clears all pending; keeps confirmed) |
+| `/drop <sub_id> @user` | Operator | Removes a single pending reviewer without naming a replacement |
 | `/content <sub_id> <text>` | Operator | Appends article draft text to the buffer (may be called multiple times for long articles) |
 | `/content_done <sub_id>` | Operator | Finalizes buffered content and triggers reviewer assignment |
 | `/skip <sub_id>` | Operator | Skips content request; assigns based on title alone |
