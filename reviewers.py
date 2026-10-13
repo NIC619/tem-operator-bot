@@ -9,7 +9,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_CATEGORY_RE = re.compile(r"^##\s+(.+)", re.MULTILINE)
+_CATEGORY_RE = re.compile(r"^#{2,3}\s+(.+)", re.MULTILINE)
 _REVIEWER_LINE_RE = re.compile(r"Reviewers?:\s*(.+)", re.IGNORECASE)
 _USERNAME_RE = re.compile(r"@?([\w]+)")
 
