@@ -1,6 +1,7 @@
 """
 scheduler.py — APScheduler jobs: Gmail polling and follow-up checker.
 """
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,10 @@ import state
 logger = logging.getLogger(__name__)
 
 _DB_KEY = "last_gmail_checked_ts"
+
+# Gmail message ids we've already alerted the operator about, so a message
+# that keeps failing doesn't trigger a DM every poll.
+_alerted_failed_ids: set[str] = set()
 
 
 def _load_last_checked_ts() -> float:
@@ -38,7 +43,14 @@ def start_scheduler(bot) -> None:
     config = cfg.load()
     poll_interval = config["gmail"].get("poll_interval_seconds", 300)
 
-    scheduler = AsyncIOScheduler()
+    # coalesce: run a backed-up job once, not once per missed slot.
+    # misfire_grace_time: still run a job that's a little late (e.g. while a
+    # long LLM call holds the event loop) instead of silently skipping it.
+    scheduler = AsyncIOScheduler(job_defaults={
+        "coalesce": True,
+        "max_instances": 1,
+        "misfire_grace_time": 120,
+    })
 
     scheduler.add_job(
         _poll_gmail,
@@ -87,14 +99,32 @@ async def _poll_gmail(bot) -> None:
     poll_start_ts = time.time()
 
     try:
-        gmail = GmailClient()
-        submissions = gmail.poll_new_submissions(
+        # The Gmail client is synchronous; run it in a thread so polling
+        # doesn't freeze Telegram updates.
+        gmail = await asyncio.to_thread(GmailClient)
+        submissions, failed_ids = await asyncio.to_thread(
+            gmail.poll_new_submissions,
             last_checked_ts,
             subject_prefix=config["gmail"].get("subject_prefix"),
             submission_label=config["gmail"].get("submission_label"),
         )
 
-        all_ok = True
+        all_ok = not failed_ids
+        new_failures = [i for i in failed_ids if i not in _alerted_failed_ids]
+        if new_failures and operator_user_id:
+            _alerted_failed_ids.update(new_failures)
+            try:
+                await bot.send_message(
+                    chat_id=operator_user_id,
+                    text=(
+                        f"⚠️ Gmail: failed to fetch {len(new_failures)} message(s) "
+                        f"({', '.join(new_failures)}). Will keep retrying each poll; "
+                        f"check the logs if this persists."
+                    ),
+                )
+            except Exception as notify_err:
+                logger.error("Failed to notify operator: %s", notify_err)
+
         for email_data in submissions:
             try:
                 await state.handle_new_submission(email_data, bot, config)

@@ -143,18 +143,21 @@ pm2 startup
 | Command | Who | What it does |
 |---------|-----|-------------|
 | `/getid` | Anyone | Shows current chat ID and your user ID |
-| `/status` | Anyone | Lists all active submissions and their state |
-| `/done <keyword>` | Reviewer | Marks your review as done (e.g. `/done fusaka`) |
-| `/reject <sub_id\|keyword> <reason>` | Anyone | Proposes rejecting a submission |
-| `/second <sub_id\|keyword>` | Anyone | Seconds a rejection proposal (2 needed) |
-| `/override <sub_id> @user1 [@user2]` | Operator | Manually assigns reviewers (clears all pending; keeps confirmed) |
-| `/drop <sub_id> @user` | Operator | Removes a single pending reviewer without naming a replacement |
+| `/status` | Group | Lists all in-progress submissions and their state |
+| `/done <keyword>` | Reviewer | Marks your review as done (e.g. `/done fusaka`); you must have accepted first |
+| `/reject <sub_id\|keyword> <reason>` | Group | Proposes rejecting a submission |
+| `/second <sub_id\|keyword>` | Group | Seconds a rejection proposal (2 needed) |
+| `/override <sub_id> @user1 [@user2]` | Operator | Manually assigns reviewers (clears all pending; keeps confirmed). Also works on a submission waiting for content or whose LLM assignment failed |
+| `/drop <sub_id> @user` | Operator | Removes a pending or confirmed reviewer without naming a replacement |
+| `/retry <sub_id>` | Operator | Re-runs the LLM reviewer pick after an automatic assignment failed |
 | `/content <sub_id> <text>` | Operator | Appends article draft text to the buffer (may be called multiple times for long articles) |
 | `/content_done <sub_id>` | Operator | Finalizes buffered content and triggers reviewer assignment |
 | `/skip <sub_id>` | Operator | Skips content request; assigns based on title alone |
 | `/omit <sub_id> [reason]` | Operator | Drops a submission so the bot ignores it (e.g. wrong-mode email) |
 
 Inline buttons appear automatically — reviewers tap to accept/decline and to mark done.
+
+"Group" commands only work in the review group chat (or the operator's DM). Operator commands require `operator_user_id` to be set; without it they're disabled.
 
 ---
 

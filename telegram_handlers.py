@@ -2,6 +2,9 @@
 telegram_handlers.py — All Telegram command and inline button callback handlers.
 """
 import logging
+import os
+import re
+import tempfile
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -12,6 +15,40 @@ import reviewers as reviewers_mod
 import state
 
 logger = logging.getLogger(__name__)
+
+
+def _is_operator(user, config: dict) -> bool:
+    """Fail closed: with no operator_user_id configured, nobody is operator."""
+    operator_user_id = config["telegram"].get("operator_user_id")
+    return bool(operator_user_id and user and user.id == operator_user_id)
+
+
+async def _require_group_or_operator(update: Update, config: dict) -> bool:
+    """Reviewer commands only work in the review group (or the operator's DM),
+    so strangers who find the bot can't read or act on submissions."""
+    chat = update.effective_chat
+    if chat and chat.id == config["telegram"].get("group_chat_id"):
+        return True
+    if _is_operator(update.effective_user, config):
+        return True
+    await update.message.reply_text("This command only works in the TEM review group.")
+    return False
+
+
+def _write_atomic(path: str, content: str) -> None:
+    """Write via a temp file + rename so a crash can't leave a truncated file."""
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".reviewers.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _resolve_submission(arg: str):
@@ -53,6 +90,8 @@ async def cmd_getid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── /status ───────────────────────────────────────────────────────────────────
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_group_or_operator(update, cfg.load()):
+        return
     active = db.get_active_submissions()
     if not active:
         await update.message.reply_text("No active submissions right now.")
@@ -82,6 +121,9 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "You must have a Telegram username to use this command."
         )
+        return
+
+    if not await _require_group_or_operator(update, cfg.load()):
         return
 
     if not context.args:
@@ -123,6 +165,9 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
+    if not await _require_group_or_operator(update, cfg.load()):
+        return
+
     if not context.args or len(context.args) < 2:
         await update.message.reply_text("Usage: /reject <sub_id|keyword> <reason>")
         return
@@ -143,13 +188,15 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     config = cfg.load()
-    await state.handle_rejection_proposal(
+    err = await state.handle_rejection_proposal(
         sub_id=sub["id"],
         proposed_by=user.username,
         reason=reason,
         bot=context.bot,
         config=config,
     )
+    if err:
+        await update.message.reply_text(err)
 
 
 # ── /second <sub_id|keyword> ──────────────────────────────────────────────────
@@ -160,6 +207,9 @@ async def cmd_second(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(
             "You must have a Telegram username to use this command."
         )
+        return
+
+    if not await _require_group_or_operator(update, cfg.load()):
         return
 
     if not context.args:
@@ -195,9 +245,8 @@ async def cmd_second(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_override(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /override.")
         return
 
@@ -230,9 +279,8 @@ async def cmd_override(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_drop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /drop.")
         return
 
@@ -266,9 +314,8 @@ async def cmd_reviewers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Show current contents of reviewers.md (operator only)."""
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /reviewers.")
         return
 
@@ -306,8 +353,7 @@ async def cmd_add_reviewer(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Operator: /add_reviewer <category_keyword> <@username>"""
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /add_reviewer.")
         return
 
@@ -337,8 +383,7 @@ async def cmd_add_reviewer(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        _write_atomic(path, new_content)
     except OSError as e:
         await update.message.reply_text(f"Failed to write {path}: {e}")
         return
@@ -352,8 +397,7 @@ async def cmd_remove_reviewer(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Operator: /remove_reviewer <@username> — removes from all categories."""
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /remove_reviewer.")
         return
 
@@ -378,8 +422,7 @@ async def cmd_remove_reviewer(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        _write_atomic(path, new_content)
     except OSError as e:
         await update.message.reply_text(f"Failed to write {path}: {e}")
         return
@@ -394,8 +437,7 @@ async def cmd_list_categories(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Operator: /list_categories — show category headings for /add_reviewer."""
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /list_categories.")
         return
 
@@ -420,9 +462,8 @@ async def cmd_list_categories(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def cmd_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /content.")
         return
 
@@ -436,7 +477,9 @@ async def cmd_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("sub_id must be a number.")
         return
 
-    article_content = " ".join(context.args[1:]).strip()
+    # Take the raw message text (not context.args) so line breaks survive.
+    match = re.match(r"^/\S+\s+\S+\s+(.*)$", update.message.text or "", re.DOTALL)
+    article_content = match.group(1).strip() if match else ""
     if not article_content:
         await update.message.reply_text("Article content cannot be empty.")
         return
@@ -472,9 +515,8 @@ async def cmd_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_content_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /content_done.")
         return
 
@@ -515,9 +557,8 @@ async def cmd_content_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /skip.")
         return
 
@@ -554,6 +595,32 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await state.handle_content_provided(sub_id, "", context.bot, config)
 
 
+# ── /retry <sub_id> ───────────────────────────────────────────────────────────
+
+async def cmd_retry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Operator: re-run the LLM reviewer pick after an automatic assignment failed."""
+    user = update.effective_user
+    config = cfg.load()
+
+    if not _is_operator(user, config):
+        await update.message.reply_text("Only the operator can use /retry.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /retry <sub_id>")
+        return
+
+    try:
+        sub_id = int(context.args[0].lstrip("#"))
+    except ValueError:
+        await update.message.reply_text("sub_id must be a number.")
+        return
+
+    await update.message.reply_text(f"🔁 Retrying reviewer assignment for #{sub_id}…")
+    answer = await state.handle_retry_assignment(sub_id, context.bot, config)
+    await update.message.reply_text(answer)
+
+
 # ── /omit <sub_id> [reason] ───────────────────────────────────────────────────
 
 async def cmd_omit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -565,9 +632,8 @@ async def cmd_omit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /omit.")
         return
 
@@ -588,14 +654,20 @@ async def cmd_omit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Submission #{sub_id} not found.")
         return
 
-    if sub["status"] in ("accepted", "rejected", "omitted"):
+    if sub["status"] in db.TERMINAL_STATUSES:
         await update.message.reply_text(
             f"Submission #{sub_id} is already {sub['status']}; nothing to omit."
         )
         return
 
-    if db.has_content_request(sub_id):
-        db.delete_content_request(sub_id)
+    if sub["status"] == "assigning_llm":
+        await update.message.reply_text(
+            f"#{sub_id} is being assigned by the LLM right now. Try again in a minute."
+        )
+        return
+
+    db.delete_content_request(sub_id)
+    db.clear_unsent_followups(sub_id)
     db.update_submission_status(sub_id, "omitted")
 
     suffix = f" — {reason}" if reason else ""
@@ -617,9 +689,8 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     user = update.effective_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
 
-    if operator_user_id and (not user or user.id != operator_user_id):
+    if not _is_operator(user, config):
         await update.message.reply_text("Only the operator can use /delete.")
         return
 
@@ -764,8 +835,7 @@ async def cb_confirm_rejection(update: Update, context: ContextTypes.DEFAULT_TYP
     user = query.from_user
     config = cfg.load()
 
-    operator_user_id = config["telegram"].get("operator_user_id")
-    if operator_user_id and user.id != operator_user_id:
+    if not _is_operator(user, config):
         await query.answer("Only the operator can confirm rejection.", show_alert=True)
         return
 
@@ -797,8 +867,7 @@ async def cb_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     user = query.from_user
     config = cfg.load()
-    operator_user_id = config["telegram"].get("operator_user_id")
-    if operator_user_id and user.id != operator_user_id:
+    if not _is_operator(user, config):
         await query.answer("Only the operator can confirm deletion.", show_alert=True)
         return
 
@@ -813,19 +882,26 @@ async def cb_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     title = sub["title"]
 
-    # Rewind the Gmail watermark so the next poll re-ingests this email.
-    created_at = sub["created_at"]
-    if created_at:
+    # Rewind the Gmail watermark to before the email arrived so the next poll
+    # re-ingests it. Prefer Gmail's own receive time; older rows only have
+    # created_at (when the bot ingested it, up to one poll interval later).
+    target_ts = None
+    if sub["gmail_internal_date"]:
+        target_ts = sub["gmail_internal_date"] / 1000 - 60
+    elif sub["created_at"]:
         try:
-            dt = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S").replace(
+            dt = datetime.strptime(sub["created_at"], "%Y-%m-%d %H:%M:%S").replace(
                 tzinfo=timezone.utc
             )
-            target_ts = dt.timestamp() - 60  # 1 minute buffer
-            current = db.get_state("last_gmail_checked_ts")
-            if current is None or float(current) > target_ts:
-                db.set_state("last_gmail_checked_ts", str(target_ts))
+            poll_interval = config["gmail"].get("poll_interval_seconds", 300)
+            target_ts = dt.timestamp() - poll_interval - 60
         except ValueError:
-            logger.warning("Could not parse created_at=%r for sub #%d", created_at, sub_id)
+            logger.warning("Could not parse created_at=%r for sub #%d",
+                           sub["created_at"], sub_id)
+    if target_ts is not None:
+        current = db.get_state("last_gmail_checked_ts")
+        if current is None or float(current) > target_ts:
+            db.set_state("last_gmail_checked_ts", str(target_ts))
 
     db.delete_submission(sub_id)
 

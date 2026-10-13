@@ -28,6 +28,7 @@ from telegram_handlers import (
     cmd_content,
     cmd_content_done,
     cmd_skip,
+    cmd_retry,
     cmd_omit,
     cmd_delete,
     cmd_reviewers,
@@ -92,13 +93,14 @@ PUBLIC_COMMANDS = [
     BotCommand("reject", "Propose rejecting: /reject <sub_id|keyword> <reason>"),
     BotCommand("second", "Second a rejection: /second <sub_id|keyword>"),
     BotCommand("override", "Operator: reassign reviewers /override <sub_id> @user1 [@user2]"),
-    BotCommand("drop", "Operator: drop a pending reviewer /drop <sub_id> @user"),
+    BotCommand("drop", "Operator: remove a reviewer /drop <sub_id> @user"),
 ]
 
 OPERATOR_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand("content", "Append draft text: /content <sub_id> <text>"),
     BotCommand("content_done", "Finalize buffered content: /content_done <sub_id>"),
     BotCommand("skip", "Skip content request: /skip <sub_id>"),
+    BotCommand("retry", "Retry a failed LLM assignment: /retry <sub_id>"),
     BotCommand("omit", "Drop a submission: /omit <sub_id> [reason]"),
     BotCommand("reviewers", "Show current reviewers.md contents"),
     BotCommand("list_categories", "Show reviewer category headings"),
@@ -117,7 +119,26 @@ async def post_init(application: Application) -> None:
         await application.bot.set_my_commands(
             OPERATOR_COMMANDS, scope=BotCommandScopeChat(chat_id=operator_id)
         )
+    else:
+        logger.warning(
+            "operator_user_id is not set — all operator-only commands are disabled."
+        )
     logger.info("Bot command menu registered.")
+
+    # A restart during an LLM call leaves submissions in 'assigning_llm'.
+    stuck = db.reset_stuck_llm_assignments()
+    if stuck and operator_id:
+        listing = "\n".join(f"#{s['id']} 《{s['title']}》" for s in stuck)
+        try:
+            await application.bot.send_message(
+                chat_id=operator_id,
+                text=(
+                    f"⚠️ The bot restarted while assigning reviewers for:\n{listing}\n\n"
+                    f"Use /retry <sub_id> to try again."
+                ),
+            )
+        except Exception as e:
+            logger.error("Failed to notify operator of stuck assignments: %s", e)
     start_scheduler(application.bot)
 
 
@@ -179,6 +200,7 @@ def main() -> None:
     app.add_handler(CommandHandler("content", cmd_content))
     app.add_handler(CommandHandler("content_done", cmd_content_done))
     app.add_handler(CommandHandler("skip", cmd_skip))
+    app.add_handler(CommandHandler("retry", cmd_retry))
     app.add_handler(CommandHandler("omit", cmd_omit))
     app.add_handler(CommandHandler("delete", cmd_delete))
     app.add_handler(CommandHandler("reviewers", cmd_reviewers))

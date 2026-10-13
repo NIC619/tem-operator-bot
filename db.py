@@ -124,19 +124,38 @@ def init_db():
                 "kind TEXT NOT NULL DEFAULT 'review'"
             )
 
+        # Additive migrations on submissions:
+        #   gmail_internal_date — Gmail's receive time (epoch ms), used by
+        #     /delete to rewind the poll watermark precisely.
+        #   under_review_emailed_at — set once the author has been sent the
+        #     "under review" email, so re-entering under_review doesn't resend it.
+        sub_cols = {row[1] for row in conn.execute("PRAGMA table_info(submissions)")}
+        if "gmail_internal_date" not in sub_cols:
+            conn.execute("ALTER TABLE submissions ADD COLUMN gmail_internal_date INTEGER")
+        if "under_review_emailed_at" not in sub_cols:
+            conn.execute("ALTER TABLE submissions ADD COLUMN under_review_emailed_at TIMESTAMP")
+            # Submissions that already reached under_review were emailed then.
+            conn.execute(
+                "UPDATE submissions SET under_review_emailed_at = created_at "
+                "WHERE status IN ('under_review', 'accepted')"
+            )
+
 
 # ── Submissions ──────────────────────────────────────────────────────────────
 
 def insert_submission(gmail_message_id, gmail_thread_id, title, author_name,
-                      author_email, medium_url, email_subject, email_body) -> int:
+                      author_email, medium_url, email_subject, email_body,
+                      gmail_internal_date: int | None = None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO submissions
                (gmail_message_id, gmail_thread_id, title, author_name,
-                author_email, medium_url, email_subject, email_body)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                author_email, medium_url, email_subject, email_body,
+                gmail_internal_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (gmail_message_id, gmail_thread_id, title, author_name,
-             author_email, medium_url, email_subject, email_body)
+             author_email, medium_url, email_subject, email_body,
+             gmail_internal_date)
         )
         return cur.lastrowid
 
@@ -166,10 +185,15 @@ def get_submission_by_title_keyword(keyword: str):
         ).fetchall()
 
 
+TERMINAL_STATUSES = ("accepted", "rejected", "omitted")
+
+
 def get_active_submissions():
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM submissions WHERE status IN ('assigning', 'under_review')"
+            """SELECT * FROM submissions
+               WHERE status NOT IN ('accepted', 'rejected', 'omitted')
+               ORDER BY id"""
         ).fetchall()
 
 
@@ -180,24 +204,70 @@ def update_submission_status(sub_id: int, status: str):
         )
 
 
-def set_submission_accepted(sub_id: int, publish_date):
+def claim_submission_status(sub_id: int, from_statuses: tuple[str, ...],
+                            to_status: str) -> bool:
+    """Atomically move a submission from one of from_statuses to to_status.
+
+    Returns True only for the caller that won the transition, so two
+    concurrent paths (e.g. the content-timeout job and /content_done) can't
+    both proceed.
+    """
+    placeholders = ", ".join("?" for _ in from_statuses)
     with get_conn() as conn:
-        conn.execute(
-            """UPDATE submissions
-               SET status = 'accepted', accepted_at = CURRENT_TIMESTAMP, publish_date = ?
-               WHERE id = ?""",
-            (publish_date, sub_id)
+        cur = conn.execute(
+            f"UPDATE submissions SET status = ? "
+            f"WHERE id = ? AND status IN ({placeholders})",
+            (to_status, sub_id, *from_statuses)
         )
+        return cur.rowcount == 1
 
 
-def set_submission_rejected(sub_id: int):
+def reset_stuck_llm_assignments() -> list:
+    """On startup, move submissions left mid-LLM-call by a restart to
+    'assignment_failed' so the operator can /retry them. Returns the rows."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM submissions WHERE status = 'assigning_llm'"
+        ).fetchall()
+        conn.execute(
+            "UPDATE submissions SET status = 'assignment_failed' "
+            "WHERE status = 'assigning_llm'"
+        )
+        return rows
+
+
+def mark_under_review_emailed(sub_id: int):
     with get_conn() as conn:
         conn.execute(
-            """UPDATE submissions
-               SET status = 'rejected', rejected_at = CURRENT_TIMESTAMP
-               WHERE id = ?""",
+            "UPDATE submissions SET under_review_emailed_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
             (sub_id,)
         )
+
+
+def set_submission_accepted(sub_id: int, publish_date) -> bool:
+    """Accept a non-terminal submission. Returns False if it was already
+    accepted/rejected/omitted (so callers don't email the author twice)."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE submissions
+               SET status = 'accepted', accepted_at = CURRENT_TIMESTAMP, publish_date = ?
+               WHERE id = ? AND status NOT IN ('accepted', 'rejected', 'omitted')""",
+            (publish_date, sub_id)
+        )
+        return cur.rowcount == 1
+
+
+def set_submission_rejected(sub_id: int) -> bool:
+    """Reject a non-terminal submission. Returns False if already terminal."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE submissions
+               SET status = 'rejected', rejected_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND status NOT IN ('accepted', 'rejected', 'omitted')""",
+            (sub_id,)
+        )
+        return cur.rowcount == 1
 
 
 def delete_submission(sub_id: int) -> bool:
@@ -292,6 +362,16 @@ def update_assignment_status(submission_id: int, reviewer_tg_username: str,
                               status: str, reviewer_tg_id: int = None):
     reviewer_tg_username = _norm_username(reviewer_tg_username)
     with get_conn() as conn:
+        if status == "declined":
+            # A declined assignment isn't real workload — drop its history row
+            # so the LLM's workload balancing doesn't count it.
+            conn.execute(
+                """DELETE FROM assignment_history WHERE id = (
+                       SELECT id FROM assignment_history
+                       WHERE submission_id = ? AND reviewer_tg_username = ?
+                       ORDER BY id DESC LIMIT 1)""",
+                (submission_id, reviewer_tg_username)
+            )
         if reviewer_tg_id is not None:
             conn.execute(
                 """UPDATE assignments
@@ -328,19 +408,21 @@ def mark_assignment_done(submission_id: int, reviewer_tg_username: str,
             )
 
 
-def delete_pending_assignment(submission_id: int, reviewer_tg_username: str) -> bool:
-    """Delete a single assignment row only if it's still in 'pending' status.
+def delete_assignment(submission_id: int, reviewer_tg_username: str,
+                      statuses: tuple[str, ...] = ("pending",)) -> bool:
+    """Delete a reviewer's assignment row if its status is in `statuses`.
 
-    Returns True if a row was deleted, False otherwise (not found or already
-    confirmed/done/declined).
+    Returns True if a row was deleted, False otherwise (not found or in a
+    status that isn't allowed).
     """
+    placeholders = ", ".join("?" for _ in statuses)
     with get_conn() as conn:
         cur = conn.execute(
-            """DELETE FROM assignments
+            f"""DELETE FROM assignments
                WHERE submission_id = ?
                  AND lower(reviewer_tg_username) = lower(?)
-                 AND status = 'pending'""",
-            (submission_id, reviewer_tg_username)
+                 AND status IN ({placeholders})""",
+            (submission_id, reviewer_tg_username, *statuses)
         )
         return cur.rowcount > 0
 
@@ -480,9 +562,13 @@ def insert_content_request(submission_id: int, deadline: datetime):
 
 
 def get_expired_content_requests(now: datetime):
+    # Only submissions still waiting on content: the request row is kept after
+    # a failed LLM assignment (so /retry can reuse the buffered article text).
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM content_requests WHERE deadline <= ?",
+            """SELECT cr.* FROM content_requests cr
+               JOIN submissions s ON s.id = cr.submission_id
+               WHERE cr.deadline <= ? AND s.status = 'pending_content'""",
             (now.isoformat(),)
         ).fetchall()
 

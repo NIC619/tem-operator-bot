@@ -6,6 +6,7 @@ persistence and return data/messages for the Telegram layer to post.
 """
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytz
@@ -77,6 +78,7 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
         medium_url=email_data.get("medium_url"),
         email_subject=email_data["email_subject"],
         email_body=email_data.get("email_body", ""),
+        gmail_internal_date=email_data.get("gmail_internal_date"),
     )
     logger.info("Inserted submission #%d: %s", sub_id, email_data["title"])
 
@@ -85,7 +87,8 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
         logger.warning(
             "operator_user_id not set — skipping content request, assigning directly."
         )
-        await _proceed_with_assignment(sub_id, email_data, "", bot, config)
+        if db.claim_submission_status(sub_id, ("pending_assignment",), "assigning_llm"):
+            await _proceed_with_assignment(sub_id, email_data, "", bot, config)
         return
 
     # Set status to pending_content and DM the operator
@@ -130,46 +133,77 @@ async def handle_new_submission(email_data: dict, bot, config: dict) -> None:
             logger.error("Failed to send group fallback notice: %s", group_err)
 
 
+def _email_data_from_sub(sub) -> dict:
+    return {
+        "gmail_message_id": sub["gmail_message_id"],
+        "gmail_thread_id": sub["gmail_thread_id"],
+        "title": sub["title"],
+        "author_name": sub["author_name"],
+        "author_email": sub["author_email"],
+        "medium_url": sub["medium_url"],
+        "email_subject": sub["email_subject"],
+        "email_body": sub["email_body"],
+    }
+
+
+_URL_RE = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
+
+
+def _sanitize_llm_text(text: str, max_len: int) -> str:
+    """LLM output is influenced by the (untrusted) submission email, so strip
+    links and cap the length before posting it to the group."""
+    text = _URL_RE.sub("[link removed]", str(text or ""))
+    text = " ".join(text.split())
+    return text[:max_len] + ("…" if len(text) > max_len else "")
+
+
 async def _proceed_with_assignment(sub_id: int, email_data: dict,
                                     article_content: str, bot, config: dict) -> None:
     """
     Call LLM, post group announcement, and send reviewer buttons.
-    Called after content is received, skipped, or timed out.
+    Called after content is received, skipped, or timed out, or via /retry.
+    The caller must already have claimed the submission ('assigning_llm').
     """
     try:
         assignment = await llm.pick_reviewers(email_data, config=config,
                                                article_content=article_content)
     except Exception as e:
         logger.error("LLM reviewer assignment failed: %s", e, exc_info=e)
+        # Keep any content request row: /retry reuses its buffered article text.
+        if not db.claim_submission_status(sub_id, ("assigning_llm",), "assignment_failed"):
+            logger.info("Submission #%d changed during LLM call; not marking failed.", sub_id)
+            return
         group_chat_id = config["telegram"]["group_chat_id"]
         await bot.send_message(
             chat_id=group_chat_id,
             text=(
                 f"⚠️ New submission received but automatic reviewer assignment failed.\n"
                 f"《{email_data['title']}》\n"
-                f"Please assign reviewers manually with /override {sub_id} @user1 @user2"
+                f"The operator will retry, or assign reviewers manually with "
+                f"/override {sub_id} @user1 @user2"
             ),
         )
-        operator_user_id = config["telegram"].get("operator_user_id")
-        if operator_user_id:
-            try:
-                await bot.send_message(
-                    chat_id=operator_user_id,
-                    text=f"⚠️ LLM assignment failed for submission #{sub_id} "
-                         f"《{email_data['title']}》: {e}",
-                )
-            except Exception as notify_err:
-                logger.error("Failed to notify operator of LLM error: %s", notify_err)
+        await notify_operator(
+            bot, config,
+            f"⚠️ LLM assignment failed for submission #{sub_id} "
+            f"《{email_data['title']}》: {e}\n\n"
+            f"Retry with /retry {sub_id}, or assign manually with "
+            f"/override {sub_id} @user1 @user2"
+        )
         return
 
-    category = assignment.get("category", "")
-    reason_zh = assignment.get("reason_zh", "")
+    category = _sanitize_llm_text(assignment.get("category", ""), 60)
+    reason_zh = _sanitize_llm_text(assignment.get("reason_zh", ""), 300)
     # reviewer2 may be "" if only one reviewer is available for this category
     reviewers = [r.strip() for r in [assignment["reviewer1"], assignment.get("reviewer2", "")] if r and r.strip()]
 
+    if not db.claim_submission_status(sub_id, ("assigning_llm",), "assigning"):
+        # Deleted or omitted by the operator while the LLM call was running.
+        logger.info("Submission #%d changed during LLM call; discarding picks.", sub_id)
+        return
+    db.delete_content_request(sub_id)
     for r in reviewers:
         db.insert_assignment(sub_id, r)
-    db.update_submission_status(sub_id, "assigning")
     _schedule_acceptance_followup(sub_id, config)
 
     group_chat_id = config["telegram"]["group_chat_id"]
@@ -211,23 +245,12 @@ async def handle_content_provided(sub_id: int, article_content: str,
     Called when the operator provides content (/content) or skips (/skip).
     Proceeds to LLM assignment.
     """
+    if not db.claim_submission_status(sub_id, ("pending_content",), "assigning_llm"):
+        return  # Already handled (e.g. by the content-timeout job)
+
     sub = db.get_submission_by_id(sub_id)
-    if not sub or sub["status"] != "pending_content":
-        return
-
-    db.delete_content_request(sub_id)
-
-    email_data = {
-        "gmail_message_id": sub["gmail_message_id"],
-        "gmail_thread_id": sub["gmail_thread_id"],
-        "title": sub["title"],
-        "author_name": sub["author_name"],
-        "author_email": sub["author_email"],
-        "medium_url": sub["medium_url"],
-        "email_subject": sub["email_subject"],
-        "email_body": sub["email_body"],
-    }
-    await _proceed_with_assignment(sub_id, email_data, article_content, bot, config)
+    await _proceed_with_assignment(sub_id, _email_data_from_sub(sub),
+                                   article_content, bot, config)
 
 
 async def handle_content_timeout(sub_id: int, bot, config: dict) -> None:
@@ -235,29 +258,42 @@ async def handle_content_timeout(sub_id: int, bot, config: dict) -> None:
     Called by the scheduler when a content request deadline expires.
     Proceeds to LLM assignment without content.
     """
-    sub = db.get_submission_by_id(sub_id)
-    if not sub or sub["status"] != "pending_content":
+    if not db.claim_submission_status(sub_id, ("pending_content",), "assigning_llm"):
         return  # Already handled by operator
 
+    sub = db.get_submission_by_id(sub_id)
     logger.info("Content request timed out for submission #%d, proceeding without content.", sub_id)
     await notify_operator(
         bot, config,
         f"⏰ Content request for #{sub_id} 《{sub['title']}》 timed out. "
         f"Proceeding with title-only assignment."
     )
-    db.delete_content_request(sub_id)
+    await _proceed_with_assignment(sub_id, _email_data_from_sub(sub), "", bot, config)
 
-    email_data = {
-        "gmail_message_id": sub["gmail_message_id"],
-        "gmail_thread_id": sub["gmail_thread_id"],
-        "title": sub["title"],
-        "author_name": sub["author_name"],
-        "author_email": sub["author_email"],
-        "medium_url": sub["medium_url"],
-        "email_subject": sub["email_subject"],
-        "email_body": sub["email_body"],
-    }
-    await _proceed_with_assignment(sub_id, email_data, "", bot, config)
+
+async def handle_retry_assignment(sub_id: int, bot, config: dict) -> str:
+    """Operator /retry: re-run the LLM pick for a submission whose automatic
+    assignment failed. Reuses any article text buffered via /content."""
+    sub = db.get_submission_by_id(sub_id)
+    if not sub:
+        return f"Submission #{sub_id} not found."
+    retryable = ("assignment_failed",)
+    if sub["status"] == "pending_content" and not db.has_content_request(sub_id):
+        # Left behind by older code, which deleted the content request
+        # before the LLM call and never marked the failure.
+        retryable = ("pending_content",)
+    if not db.claim_submission_status(sub_id, retryable, "assigning_llm"):
+        return (
+            f"#{sub_id} is in status '{sub['status']}' — /retry only works "
+            f"after a failed automatic assignment."
+        )
+    article_content = db.get_content_request_text(sub_id)
+    await _proceed_with_assignment(sub_id, _email_data_from_sub(sub),
+                                   article_content, bot, config)
+    sub = db.get_submission_by_id(sub_id)
+    if sub["status"] == "assigning":
+        return f"✅ Reviewers assigned for #{sub_id}. See the group for details."
+    return f"⚠️ Retry failed for #{sub_id}. Check the error above."
 
 
 # ── Reviewer Accept / Decline ─────────────────────────────────────────────────
@@ -268,6 +304,10 @@ async def handle_reviewer_accept(sub_id: int, username: str, tg_user_id: int,
     Returns a string to show in the callback answer (toast).
     Posts group messages and transitions state as needed.
     """
+    sub = db.get_submission_by_id(sub_id)
+    if not sub or sub["status"] != "assigning":
+        return "This submission is no longer looking for reviewers."
+
     assignment = db.get_assignment(sub_id, username)
     if not assignment:
         return "Assignment not found."
@@ -277,7 +317,6 @@ async def handle_reviewer_accept(sub_id: int, username: str, tg_user_id: int,
 
     db.update_assignment_status(sub_id, username, "confirmed", tg_user_id)
 
-    sub = db.get_submission_by_id(sub_id)
     await notify_operator(
         bot, config,
         f"✅ @{username} accepted review for #{sub_id} 《{sub['title']}》."
@@ -296,6 +335,10 @@ async def handle_reviewer_accept(sub_id: int, username: str, tg_user_id: int,
 
 async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
                                    bot, config: dict) -> str:
+    sub = db.get_submission_by_id(sub_id)
+    if not sub or sub["status"] != "assigning":
+        return "This submission is no longer looking for reviewers."
+
     assignment = db.get_assignment(sub_id, username)
     if not assignment:
         return "Assignment not found."
@@ -305,7 +348,6 @@ async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
 
     db.update_assignment_status(sub_id, username, "declined", tg_user_id)
 
-    sub = db.get_submission_by_id(sub_id)
     await notify_operator(
         bot, config,
         f"❌ @{username} declined review for #{sub_id} 《{sub['title']}》. "
@@ -317,19 +359,9 @@ async def handle_reviewer_decline(sub_id: int, username: str, tg_user_id: int,
     existing_assignments = db.get_assignments_for_submission(sub_id)
     excluded = [a["reviewer_tg_username"] for a in existing_assignments]
 
-    email_data = {
-        "gmail_message_id": sub["gmail_message_id"],
-        "title": sub["title"],
-        "author_name": sub["author_name"],
-        "author_email": sub["author_email"],
-        "medium_url": sub["medium_url"],
-        "email_subject": sub["email_subject"],
-        "email_body": sub["email_body"],
-    }
-
     try:
         assignment_result = await llm.pick_replacement_reviewer(
-            email_data=email_data,
+            email_data=_email_data_from_sub(sub),
             declined_username=username,
             excluded_usernames=excluded,
         )
@@ -403,25 +435,38 @@ async def _transition_to_under_review(sub_id: int, bot, config: dict) -> None:
     db.update_submission_status(sub_id, "under_review")
     db.clear_unsent_followups(sub_id, kind="acceptance")
 
+    # A submission can re-enter under_review (e.g. after /override adds a
+    # reviewer); only email the author the first time.
+    email_author = not sub["under_review_emailed_at"]
+
     await notify_operator(
         bot, config,
         f"📖 #{sub_id} 《{sub['title']}》 is now under review. "
-        f"Reviewers: {', '.join(f'@{r}' for r in reviewers)}. Author notified."
+        f"Reviewers: {', '.join(f'@{r}' for r in reviewers)}."
+        + (" Author notified." if email_author else "")
     )
 
     group_chat_id = config["telegram"]["group_chat_id"]
 
-    # Schedule first follow-up
+    # Schedule first follow-up, replacing any chain from a previous entry
     followup_days = config["workflow"]["followup_interval_days"]
     next_followup = datetime.now(timezone.utc) + timedelta(days=followup_days)
+    db.clear_unsent_followups(sub_id, kind="review")
     db.insert_followup(sub_id, next_followup)
 
     # Send "under review" email to submitter (run blocking Gmail call in thread)
-    try:
-        gmail = GmailClient()
-        await asyncio.to_thread(gmail.send_under_review_email, dict(sub))
-    except Exception as e:
-        logger.error("Failed to send under-review email: %s", e)
+    if email_author:
+        try:
+            gmail = await asyncio.to_thread(GmailClient)
+            await asyncio.to_thread(gmail.send_under_review_email, dict(sub))
+            db.mark_under_review_emailed(sub_id)
+        except Exception as e:
+            logger.error("Failed to send under-review email: %s", e)
+            await notify_operator(
+                bot, config,
+                f"⚠️ Failed to send the under-review email for #{sub_id} "
+                f"《{sub['title']}》: {e}"
+            )
 
     # Post group message with done buttons (one per reviewer)
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -439,7 +484,8 @@ async def _transition_to_under_review(sub_id: int, bot, config: dict) -> None:
         text=(
             f"✅ {count_word} confirmed for 《{sub['title']}》\n"
             f"{reviewer_lines}\n\n"
-            f"Submission status updated to \"Under Review\". Author has been notified.\n\n"
+            f"Submission status updated to \"Under Review\"."
+            f"{' Author has been notified.' if email_author else ''}\n\n"
             f"When you've finished your review, click the button below or "
             f"type /done <keyword> (use any word from the title)"
         ),
@@ -456,6 +502,8 @@ async def handle_reviewer_done(sub_id: int, username: str, tg_user_id: int,
     if not sub:
         return "Submission not found."
 
+    # 'assigning' is allowed so a confirmed reviewer can finish while the
+    # operator is still finding a replacement for a second slot.
     if sub["status"] not in ("under_review", "assigning"):
         return "This submission is not currently under review."
 
@@ -466,6 +514,12 @@ async def handle_reviewer_done(sub_id: int, username: str, tg_user_id: int,
     if assignment["status"] == "done":
         return "Already recorded!"
 
+    if assignment["status"] != "confirmed":
+        return (
+            f"You (@{username}) haven't accepted this review yet — "
+            f"tap ✅ Yes on the review request first."
+        )
+
     db.mark_assignment_done(sub_id, username, tg_user_id)
 
     await notify_operator(
@@ -473,35 +527,40 @@ async def handle_reviewer_done(sub_id: int, username: str, tg_user_id: int,
         f"✅ @{username} marked review done for #{sub_id} 《{sub['title']}》."
     )
 
-    done_reviewers = db.get_done_reviewers(sub_id)
-    confirmed_reviewers = db.get_confirmed_reviewers(sub_id)
-    # After marking done, re-fetch
+    await _maybe_accept(sub_id, bot, config, finished_by=username)
+    return "✅ Review marked as done!"
+
+
+async def _maybe_accept(sub_id: int, bot, config: dict,
+                        finished_by: str | None = None) -> bool:
+    """Accept the submission once every non-declined reviewer is done.
+
+    A reviewer who hasn't responded yet ('pending') or is still reviewing
+    ('confirmed') blocks acceptance. Returns True if the submission was accepted.
+    """
+    sub = db.get_submission_by_id(sub_id)
     all_assignments = db.get_assignments_for_submission(sub_id)
-    # Active reviewers = confirmed + done (not declined, not still pending)
-    active = [a for a in all_assignments if a["status"] in ("confirmed", "done")]
+    active = [a for a in all_assignments if a["status"] != "declined"]
     done_list = [a for a in active if a["status"] == "done"]
 
-    group_chat_id = config["telegram"]["group_chat_id"]
-
-    # All active reviewers finished → accept
-    if active and len(done_list) >= len(active):
+    if active and len(done_list) == len(active):
         await _transition_to_accepted(sub_id, done_list, bot, config)
-    else:
-        still_pending = [
+        return True
+
+    if finished_by:
+        waiting = [
             a["reviewer_tg_username"] for a in active
-            if a["status"] == "confirmed" and a["reviewer_tg_username"] != username
+            if a["status"] in ("pending", "confirmed")
         ]
-        if still_pending:
-            waiting = ", ".join(f"@{u}" for u in still_pending)
+        if waiting:
             await bot.send_message(
-                chat_id=group_chat_id,
+                chat_id=config["telegram"]["group_chat_id"],
                 text=(
-                    f"✅ @{username} has finished their review of 《{sub['title']}》.\n\n"
-                    f"Waiting on {waiting} to complete theirs."
+                    f"✅ @{finished_by} has finished their review of 《{sub['title']}》.\n\n"
+                    f"Waiting on {', '.join(f'@{u}' for u in waiting)} to complete theirs."
                 ),
             )
-
-    return "✅ Review marked as done!"
+    return False
 
 
 async def _transition_to_accepted(sub_id: int, done_assignments: list,
@@ -515,7 +574,10 @@ async def _transition_to_accepted(sub_id: int, done_assignments: list,
     )
     publish_date_str = publish_dt.strftime("%Y-%m-%d")
 
-    db.set_submission_accepted(sub_id, publish_date_str)
+    if not db.set_submission_accepted(sub_id, publish_date_str):
+        logger.warning("Submission #%d already finalized; not accepting again.", sub_id)
+        return
+    db.clear_unsent_followups(sub_id)
 
     publish_time_str = config["workflow"].get("publish_time", "09:30")
     publish_tz_str = config["workflow"].get("publish_timezone", "Asia/Taipei")
@@ -546,17 +608,25 @@ async def _transition_to_accepted(sub_id: int, done_assignments: list,
 
     try:
         import asyncio
-        gmail = GmailClient()
+        gmail = await asyncio.to_thread(GmailClient)
         await asyncio.to_thread(gmail.send_acceptance_email, dict(sub), publish_date_str)
     except Exception as e:
         logger.error("Failed to send acceptance email: %s", e)
+        await notify_operator(
+            bot, config,
+            f"⚠️ Failed to send the acceptance email for #{sub_id} "
+            f"《{sub['title']}》: {e}\nPlease notify the author manually."
+        )
 
 
 # ── Rejection Flow ────────────────────────────────────────────────────────────
 
 async def handle_rejection_proposal(sub_id: int, proposed_by: str,
-                                     reason: str, bot, config: dict) -> None:
+                                     reason: str, bot, config: dict) -> str | None:
+    """Returns an error message if the proposal can't be made, else None."""
     sub = db.get_submission_by_id(sub_id)
+    if sub["status"] in db.TERMINAL_STATUSES:
+        return f"#{sub_id} is already {sub['status']}."
     group_chat_id = config["telegram"]["group_chat_id"]
 
     rejection_id = db.insert_rejection(sub_id, proposed_by, reason)
@@ -578,12 +648,17 @@ async def handle_rejection_proposal(sub_id: int, proposed_by: str,
         ),
     )
     db.set_rejection_proposal_message_id(rejection_id, msg.message_id)
+    return None
 
 
 async def handle_second(sub_id: int, username: str, bot, config: dict) -> str:
     rejection = db.get_active_rejection(sub_id)
     if not rejection:
         return "No active rejection proposal for this submission."
+
+    sub = db.get_submission_by_id(sub_id)
+    if sub["status"] in db.TERMINAL_STATUSES:
+        return f"#{sub_id} is already {sub['status']}."
 
     if username.lower() == (rejection["proposed_by"] or "").lower():
         return "You can't second your own rejection proposal."
@@ -642,7 +717,7 @@ async def handle_second(sub_id: int, username: str, bot, config: dict) -> str:
 async def handle_confirm_rejection(sub_id: int, operator_tg_id: int,
                                     bot, config: dict) -> str:
     operator_user_id = config["telegram"].get("operator_user_id")
-    if operator_user_id and operator_tg_id != operator_user_id:
+    if not operator_user_id or operator_tg_id != operator_user_id:
         return "Only the operator can confirm rejection."
 
     rejection = db.get_active_rejection(sub_id)
@@ -652,7 +727,10 @@ async def handle_confirm_rejection(sub_id: int, operator_tg_id: int,
     if not rejection:
         return "No active rejection proposal for this submission."
 
-    db.set_submission_rejected(sub_id)
+    if not db.set_submission_rejected(sub_id):
+        return f"#{sub_id} is already {sub['status']}; nothing to reject."
+    db.clear_unsent_followups(sub_id)
+    db.delete_content_request(sub_id)
 
     group_chat_id = config["telegram"]["group_chat_id"]
     await bot.send_message(
@@ -683,6 +761,13 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
     if not sub:
         return f"Submission #{sub_id} not found."
 
+    if sub["status"] in db.TERMINAL_STATUSES:
+        return f"#{sub_id} is already {sub['status']}; /override can't reopen it."
+    if sub["status"] == "assigning_llm":
+        return f"#{sub_id} is being assigned by the LLM right now. Try again in a minute."
+
+    # Manual assignment replaces the content request / failed LLM pick.
+    db.delete_content_request(sub_id)
     db.clear_pending_assignments(sub_id)
 
     # Deduplicate the operator's input (case-insensitive) and skip anyone
@@ -721,7 +806,11 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
         db.clear_unsent_followups(sub_id, kind="acceptance")
         if has_confirmed:
             # No pending left and at least one confirmed reviewer — proceed.
-            await _transition_to_under_review(sub_id, bot, config)
+            if sub["status"] != "under_review":
+                await _transition_to_under_review(sub_id, bot, config)
+        elif remaining:
+            # Only done reviewers remain — everyone finished.
+            await _maybe_accept(sub_id, bot, config)
         else:
             # No assignments at all — leave in 'assigning' and warn operator.
             db.update_submission_status(sub_id, "assigning")
@@ -738,7 +827,7 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
         if not remaining:
             note += " ⚠️ No reviewers remain — assign someone with /override."
         elif has_confirmed and not has_pending:
-            note += " All remaining reviewers already confirmed — transitioned to under_review."
+            note += " All remaining reviewers already confirmed — submission is under review."
         return f"Override: nothing to add.{note}"
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -779,7 +868,8 @@ async def handle_override(sub_id: int, new_reviewers: list[str],
 # ── Drop a pending reviewer ──────────────────────────────────────────────────
 
 async def handle_drop(sub_id: int, username: str, bot, config: dict) -> str:
-    """Operator removes a single pending reviewer without naming a replacement."""
+    """Operator removes a single pending or confirmed reviewer without naming
+    a replacement. Reviewers who already finished ('done') can't be dropped."""
     sub = db.get_submission_by_id(sub_id)
     if not sub:
         return f"Submission #{sub_id} not found."
@@ -793,18 +883,18 @@ async def handle_drop(sub_id: int, username: str, bot, config: dict) -> str:
     existing = db.get_assignment(sub_id, username)
     if not existing:
         return f"@{username} is not assigned to #{sub_id}."
-    if existing["status"] != "pending":
+    if existing["status"] not in ("pending", "confirmed"):
         return (
             f"@{username} is in status '{existing['status']}' on #{sub_id}; "
-            f"/drop only removes pending reviewers. Use /override to replace "
-            f"a confirmed reviewer."
+            f"/drop only removes reviewers who are pending or still reviewing."
         )
 
-    deleted = db.delete_pending_assignment(sub_id, username)
+    deleted = db.delete_assignment(sub_id, username, statuses=("pending", "confirmed"))
     if not deleted:
         return f"Failed to drop @{username} from #{sub_id}."
 
     remaining = db.get_assignments_for_submission(sub_id)
+    active = [a for a in remaining if a["status"] != "declined"]
     has_pending = any(a["status"] == "pending" for a in remaining)
     has_confirmed = any(a["status"] == "confirmed" for a in remaining)
 
@@ -822,10 +912,19 @@ async def handle_drop(sub_id: int, username: str, bot, config: dict) -> str:
                 f"Dropped @{username}. All remaining reviewers already "
                 f"confirmed — moved to under_review."
             )
-        if not remaining:
+        if not active:
+            if sub["status"] == "under_review":
+                db.update_submission_status(sub_id, "assigning")
             return (
                 f"Dropped @{username}. ⚠️ No reviewers remain — "
                 f"assign someone with /override {sub_id} @user1 [@user2]."
+            )
+        if not has_confirmed:
+            # Only finished reviewers remain.
+            await _maybe_accept(sub_id, bot, config)
+            return (
+                f"Dropped @{username}. All remaining reviewers had finished — "
+                f"#{sub_id} is accepted."
             )
 
     return f"Dropped @{username} from #{sub_id}."

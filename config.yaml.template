@@ -12,6 +12,9 @@ workflow:
 
 reviewers_file: "./reviewers.md"           # Path to reviewer list (use /data/reviewers.md on Railway)
 
+llm:
+  model: "gpt-5.4-mini"                    # OpenAI model for reviewer assignment (env OPENAI_MODEL overrides)
+
 # Optional: customize email bodies sent to submission authors.
 # Omit a key (or the whole section) to use built-in defaults.
 # Placeholders use Python str.format() syntax — any stray { or } must be doubled ({{ }}).

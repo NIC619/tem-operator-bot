@@ -3,6 +3,7 @@ gmail_client.py — Gmail OAuth setup, polling, email parsing, and sending.
 """
 import base64
 import email as email_lib
+import html
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 import config as config_module
+import db
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +75,13 @@ class GmailClient:
 
     def poll_new_submissions(self, last_checked_timestamp: float,
                              subject_prefix: str = None,
-                             submission_label: str = None) -> list[dict]:
+                             submission_label: str = None) -> tuple[list[dict], list[str]]:
         """
         Query Gmail for messages received after last_checked_timestamp (Unix epoch).
         Filters by subject_prefix and/or submission_label when provided.
-        Returns list of parsed submission dicts, skipping replies/threads.
+        Returns (parsed submission dicts, ids of messages that failed to fetch).
+        Skips replies and messages already in the DB. A failure listing
+        messages raises, so the caller doesn't advance its watermark.
         """
         after_ts = int(last_checked_timestamp)
         parts = [f"after:{after_ts}"]
@@ -94,30 +98,38 @@ class GmailClient:
         query = " ".join(parts)
         logger.info("Gmail query: %s", query)
 
-        try:
+        messages = []
+        page_token = None
+        while True:
             result = (
                 self.service.users()
                 .messages()
-                .list(userId="me", q=query, maxResults=50)
+                .list(userId="me", q=query, maxResults=100, pageToken=page_token)
                 .execute()
             )
-        except HttpError as e:
-            logger.error("Gmail API error listing messages: %s", e)
-            return []
+            messages.extend(result.get("messages", []))
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
 
-        messages = result.get("messages", [])
         logger.info("Gmail query returned %d message(s).", len(messages))
         submissions = []
+        failed_ids = []
 
         for msg_ref in messages:
+            # Already ingested (or omitted/finished) — the DB is the source of
+            # truth, so a /delete'd submission is picked up again.
+            if db.get_submission_by_gmail_id(msg_ref["id"]):
+                continue
             try:
                 parsed = self._fetch_and_parse(msg_ref["id"])
                 if parsed:
                     submissions.append(parsed)
             except Exception as e:
                 logger.error("Error processing message %s: %s", msg_ref["id"], e)
+                failed_ids.append(msg_ref["id"])
 
-        return submissions
+        return submissions, failed_ids
 
     def _fetch_and_parse(self, message_id: str) -> dict | None:
         msg = (
@@ -136,18 +148,7 @@ class GmailClient:
             logger.info("  → skipped (is a reply)")
             return None
 
-        # Skip if thread has more than 1 message (i.e. we've already replied)
         thread_id = msg.get("threadId", message_id)
-        thread = (
-            self.service.users()
-            .threads()
-            .get(userId="me", id=thread_id, format="minimal")
-            .execute()
-        )
-        thread_len = len(thread.get("messages", []))
-        if thread_len > 1:
-            logger.info("  → skipped (thread has %d messages, already processed)", thread_len)
-            return None
 
         subject_raw = headers.get("subject", "")
         subject_clean = _REPLY_SUBJECT_RE.sub("", subject_raw).strip()
@@ -168,6 +169,7 @@ class GmailClient:
             "email_subject": subject_raw,
             "email_body": body,
             "message_id_header": headers.get("message-id", ""),
+            "gmail_internal_date": int(msg["internalDate"]) if msg.get("internalDate") else None,
         }
 
     # ── Sending ───────────────────────────────────────────────────────────────
@@ -271,10 +273,17 @@ def _parse_from_header(from_raw: str) -> tuple[str, str]:
 
 
 def _extract_body(payload: dict) -> str:
-    """Recursively extract plain-text body from a Gmail message payload."""
+    """Extract the plain-text body from a Gmail message payload, falling back
+    to tag-stripped HTML for HTML-only emails."""
+    return (_extract_part(payload, "text/plain")
+            or _html_to_text(_extract_part(payload, "text/html")))
+
+
+def _extract_part(payload: dict, wanted: str) -> str:
+    """Recursively find the first part of MIME type `wanted` and decode it."""
     mime_type = payload.get("mimeType", "")
 
-    if mime_type == "text/plain":
+    if mime_type == wanted:
         data = payload.get("body", {}).get("data", "")
         if data:
             return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
@@ -282,11 +291,29 @@ def _extract_body(payload: dict) -> str:
 
     if mime_type.startswith("multipart/"):
         for part in payload.get("parts", []):
-            text = _extract_body(part)
+            text = _extract_part(part, wanted)
             if text:
                 return text
 
     return ""
+
+
+_HTML_DROP_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_HTML_BREAK_RE = re.compile(r"<(br|/p|/div|/li|/h[1-6])\s*/?>", re.IGNORECASE)
+_HTML_HREF_RE = re.compile(r"""<a\s[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>""",
+                           re.IGNORECASE | re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _html_to_text(markup: str) -> str:
+    if not markup:
+        return ""
+    text = _HTML_DROP_RE.sub("", markup)
+    # Keep link targets so Medium URLs are still found.
+    text = _HTML_HREF_RE.sub(r"\2 \1 ", text)
+    text = _HTML_BREAK_RE.sub("\n", text)
+    text = html.unescape(_HTML_TAG_RE.sub("", text))
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()
 
 
 def _find_medium_url(text: str) -> str | None:
